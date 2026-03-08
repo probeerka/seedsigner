@@ -22,7 +22,10 @@ from seedsigner.views.screensaver import ScreensaverScreen
 from seedsigner.views.view import Destination
 from seedsigner.hardware.rng_monitor import HardwareRngHealthMonitor, HardwareRngMonitorThread
 from seedsigner.hardware.io_config import get_hardware_pin_mapping, get_hardware_profile_label
-
+from seedsigner.views.ethereum_views import  EthereumAddressExplorerView
+from seedsigner.views.ethereum_views import  EthereumAddressDetailView
+from seedsigner.views.tron_views import TronAddressExplorerView
+from seedsigner.views.tron_views import TronAddressDetailView
 
 logger = logging.getLogger(__name__)
 

@@ -2009,6 +2009,8 @@ class SeedOptionsView(View):
     EXPORT_XPUB = ButtonOption("Export Xpub")
     EXPLORER = ButtonOption("Address Explorer")
     SIGN_MESSAGE = ButtonOption("Sign Message")
+    ETH_ADDRESSES = ButtonOption("Show ETH Addrs")
+    TRX_ADDRESSES = ButtonOption("Show TRX Addrs")
     BACKUP = ButtonOption("Backup Seed", right_icon_name=SeedSignerIconConstants.CHEVRON_RIGHT)
     BIP85_CHILD_SEED = ButtonOption("BIP-85 Child Seed")
     DISCARD = ButtonOption("Discard Seed", button_label_color="red")
@@ -2064,6 +2066,8 @@ class SeedOptionsView(View):
 
         button_data.append(self.EXPLORER)
         button_data.append(self.BACKUP)
+        button_data.append(self.ETH_ADDRESSES)
+        button_data.append(self.TRX_ADDRESSES)
 
         if self.settings.get_value(SettingsConstants.SETTING__MESSAGE_SIGNING) == SettingsConstants.OPTION__ENABLED:
             button_data.append(self.SIGN_MESSAGE)
@@ -2098,6 +2102,12 @@ class SeedOptionsView(View):
         elif button_data[selected_menu_num] == self.EXPLORER:
             self.controller.resume_main_flow = Controller.FLOW__ADDRESS_EXPLORER
             return Destination(SeedExportXpubScriptTypeView, view_args=dict(seed_num=self.seed_num, sig_type=SettingsConstants.SINGLE_SIG))
+
+        elif button_data[selected_menu_num] == self.ETH_ADDRESSES:
+            return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+
+        elif button_data[selected_menu_num] == self.TRX_ADDRESSES:
+            return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
 
         elif button_data[selected_menu_num] == self.SIGN_MESSAGE:
             from seedsigner.views.scan_views import ScanView
