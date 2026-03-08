@@ -3,6 +3,7 @@ __pycache__/
 src/seedsigner.egg-info/
 .nova
 .vscode
+src/venv
 src/seedsigner/models/settings_definition.json
 .idea
 .coverage*
