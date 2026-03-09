@@ -316,6 +316,16 @@ class BaseFountainQrEncoder(BaseQrEncoder):
         self.ur2_encode.fountain_encoder.restart()
 
 
+@dataclass
+class UrFountainQrEncoder(BaseFountainQrEncoder):
+    """Generic UR fountain encoder — принимает готовый UREncoder."""
+    ur_encoder: object = None  # UREncoder instance
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.ur2_encode = self.ur_encoder
+
+
 
 @dataclass
 class UrXpubQrEncoder(BaseFountainQrEncoder, BaseXpubQrEncoder):

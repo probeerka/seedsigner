@@ -145,7 +145,7 @@ class ScanView(View):
                     return Destination(ScanInvalidQRTypeView)
 
                 return Destination(SeedFinalizeView)
-            
+
             elif self.decoder.is_psbt:
                 from seedsigner.views.psbt_views import PSBTSelectSeedView
                 psbt = self.decoder.get_psbt()
@@ -153,11 +153,17 @@ class ScanView(View):
                 self.controller.psbt_parser = None
                 return Destination(PSBTSelectSeedView, skip_current_view=True)
 
+            elif self.decoder.qr_type == QRType.ETH_SIGN_REQUEST:
+                from seedsigner.views.evm_sign_views import EvmReviewTransactionView
+                sign_request_ur = self.decoder.get_eth_sign_request()
+                self.controller.sign_request = sign_request_ur
+                return Destination(EvmReviewTransactionView, view_args={"seed_num": self.controller.evm_seed_num})
+
             elif self.decoder.is_settings:
                 from seedsigner.views.settings_views import SettingsIngestSettingsQRView
                 data = self.decoder.get_settings_data()
                 return Destination(SettingsIngestSettingsQRView, view_args=dict(data=data))
-            
+
             elif self.decoder.is_wallet_descriptor:
                 from embit.descriptor import Descriptor
                 from seedsigner.views.seed_views import MultisigWalletDescriptorView
@@ -182,7 +188,7 @@ class ScanView(View):
 
                 self.controller.multisig_wallet_descriptor = descriptor
                 return Destination(MultisigWalletDescriptorView, skip_current_view=True)
-            
+
             elif self.decoder.is_address:
                 from seedsigner.views.seed_views import AddressVerificationStartView
                 address = self.decoder.get_address()
@@ -197,7 +203,7 @@ class ScanView(View):
                         "network": network,
                     }
                 )
-            
+
             elif self.decoder.is_sign_message:
                 from seedsigner.views.seed_views import SeedSignMessageStartView
                 qr_data = self.decoder.get_qr_data()
@@ -535,7 +541,7 @@ class ScanEncryptedQRTypeEncryptionKeyExitDialogView(View):
 
     def run(self):
         button_data = [self.EDIT, self.DISCARD]
-        
+
         selected_menu_num = self.run_screen(
             WarningScreen,
             title="Discard encryption key?",

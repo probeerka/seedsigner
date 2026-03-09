@@ -48,3 +48,4 @@ class QRType:
     GENERIC_STRING = "generic_string"
 
     INVALID = "invalid"
+    ETH_SIGN_REQUEST = "eth__sign_request"
