@@ -365,7 +365,7 @@ class SettingsConstants:
             return "test"
         if network == SettingsConstants.REGTEST:
             return "regtest"
-    
+
     PERSISTENT_SETTINGS__SD_INSERTED__HELP_TEXT = _mft("Store Settings on SD card")
     PERSISTENT_SETTINGS__SD_REMOVED__HELP_TEXT = _mft("Insert SD card to enable")
 
@@ -460,6 +460,9 @@ class SettingsConstants:
     SETTING__PASSPORT_BACKUP = "passport_backup"
     SETTING__TAPSIGNER_BACKUP = "tapsigner_backup"
     SETTING__MESSAGE_SIGNING = "message_signing"
+    SETTING__ALT_NETWORKS = "alt_networks"
+    ALT_NETWORK__ERC20 = "erc20"
+    ALT_NETWORK__TRC20 = "trc20"
     SETTING__PRIVACY_WARNINGS = "privacy_warnings"
     SETTING__DIRE_WARNINGS = "dire_warnings"
     SETTING__QR_BRIGHTNESS_TIPS = "qr_brightness_tips"
@@ -585,7 +588,7 @@ class SettingsEntry:
         * category: Mostly for organizational purposes when displaying options in the
             SettingsQR UI. Potentially an additional sub-level breakout in the menus
             on the device itself, too.
-        
+
         * selection_options: May be specified as a List(Any) or List(tuple(Any, str)).
             The tuple form is to provide a human-readable display_name. Probably all
             entries should shift to using the tuple form.
@@ -611,7 +614,7 @@ class SettingsEntry:
         elif self.type == SettingsConstants.TYPE__ENABLED_DISABLED_PROMPT_REQUIRED:
             self.selection_options = SettingsConstants.ALL_OPTIONS
 
-        # Account for List[tuple] and tuple formats as default_value        
+        # Account for List[tuple] and tuple formats as default_value
         if type(self.default_value) == list and type(self.default_value[0]) == tuple:
             self.default_value = [v[0] for v in self.default_value]
         elif type(self.default_value) == tuple:
@@ -634,7 +637,7 @@ class SettingsEntry:
             value = value[0]
         return value
 
-    
+
     def get_selection_option_display_name_by_value(self, value) -> str:
         for option in self.selection_options:
             if type(option) == tuple:
@@ -989,6 +992,19 @@ class SettingsDefinition:
                       default_value=SettingsConstants.OPTION__DISABLED),
 
         SettingsEntry(category=SettingsConstants.CATEGORY__FEATURES,
+                      attr_name=SettingsConstants.SETTING__ALT_NETWORKS,
+                      abbreviated_name="altnetworks",
+                      display_name=_mft("Alt networks addr view"),
+                      type=SettingsConstants.TYPE__MULTISELECT,
+                      visibility=SettingsConstants.VISIBILITY__ADVANCED,
+                      selection_options=[
+                          (SettingsConstants.ALT_NETWORK__ERC20, _mft("ERC20 (Ethereum)")),
+                          (SettingsConstants.ALT_NETWORK__TRC20, _mft("TRC20 (Tron)")),
+                      ],
+                      default_value=[(SettingsConstants.ALT_NETWORK__ERC20,
+                          SettingsConstants.ALT_NETWORK__TRC20)]),
+
+        SettingsEntry(category=SettingsConstants.CATEGORY__FEATURES,
                       attr_name=SettingsConstants.SETTING__SMARTCARD_SUPPORT,
                       abbreviated_name="smartcard",
                       display_name=_mft("Smartcard support"),
@@ -1114,7 +1130,7 @@ class SettingsDefinition:
         #               display_name="Debug",
         #               visibility=SettingsConstants.VISIBILITY__DEVELOPER,
         #               default_value=SettingsConstants.OPTION__DISABLED),
-        
+
         # "Hidden" settings with no UI interaction
         SettingsEntry(category=SettingsConstants.CATEGORY__SYSTEM,
                       attr_name=SettingsConstants.SETTING__QR_BRIGHTNESS,
@@ -1140,7 +1156,7 @@ class SettingsDefinition:
                         pass
                 entries.append(entry)
         return entries
-    
+
 
     @classmethod
     def get_settings_entry(cls, attr_name) -> SettingsEntry:
@@ -1176,7 +1192,7 @@ class SettingsDefinition:
         }
         for settings_entry in cls.settings_entries:
             output["settings_entries"].append(settings_entry.to_dict())
-        
+
         return output
 
 
@@ -1186,11 +1202,11 @@ if __name__ == "__main__":
     import os
 
     hostname = os.uname()[1]
-  
+
     if hostname == "seedsigner-os":
         output_file = "/mnt/microsd/settings_definition.json"
     else:
         output_file = "settings_definition.json"
-    
+
     with open(output_file, 'w') as json_file:
         json.dump(SettingsDefinition.to_dict(), json_file, indent=4)
