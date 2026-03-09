@@ -45,3 +45,29 @@ class TestSettingsDefinition(BaseTest):
     def test_tapsigner_backup_default_disabled(self):
         defaults = SettingsDefinition.get_defaults()
         assert defaults[SettingsConstants.SETTING__TAPSIGNER_BACKUP] == SettingsConstants.OPTION__DISABLED
+
+    def test_alt_networks_default_disabled(self):
+        """ALT_NETWORKS should be disabled by default (empty selection)"""
+        defaults = SettingsDefinition.get_defaults()
+        alt_networks = defaults[SettingsConstants.SETTING__ALT_NETWORKS]
+        assert SettingsConstants.ALT_NETWORK__ERC20 not in alt_networks
+        assert SettingsConstants.ALT_NETWORK__TRC20 not in alt_networks
+
+    def test_alt_networks_constants_exist(self):
+        """ALT_NETWORK constants should be defined"""
+        assert hasattr(SettingsConstants, "SETTING__ALT_NETWORKS")
+        assert hasattr(SettingsConstants, "ALT_NETWORK__ERC20")
+        assert hasattr(SettingsConstants, "ALT_NETWORK__TRC20")
+        assert SettingsConstants.ALT_NETWORK__ERC20 == "erc20"
+        assert SettingsConstants.ALT_NETWORK__TRC20 == "trc20"
+
+    def test_alt_networks_setting_entry_exists(self):
+        """ALT_NETWORKS should have a valid SettingsEntry"""
+        entry = SettingsDefinition.get_settings_entry(SettingsConstants.SETTING__ALT_NETWORKS)
+        assert entry is not None
+        assert entry.visibility == SettingsConstants.VISIBILITY__ADVANCED
+        # selection_options should include ERC20 and TRC20
+        option_values = [o[0] for o in entry.selection_options]
+        assert SettingsConstants.ALT_NETWORK__ERC20 in option_values
+        assert SettingsConstants.ALT_NETWORK__TRC20 in option_values
+

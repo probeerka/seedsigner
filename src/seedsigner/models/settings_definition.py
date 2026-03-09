@@ -615,7 +615,7 @@ class SettingsEntry:
             self.selection_options = SettingsConstants.ALL_OPTIONS
 
         # Account for List[tuple] and tuple formats as default_value
-        if type(self.default_value) == list and type(self.default_value[0]) == tuple:
+        if type(self.default_value) == list and len(self.default_value) > 0 and type(self.default_value[0]) == tuple:
             self.default_value = [v[0] for v in self.default_value]
         elif type(self.default_value) == tuple:
             self.default_value = self.default_value[0]
@@ -1001,8 +1001,7 @@ class SettingsDefinition:
                           (SettingsConstants.ALT_NETWORK__ERC20, _mft("ERC20 (Ethereum)")),
                           (SettingsConstants.ALT_NETWORK__TRC20, _mft("TRC20 (Tron)")),
                       ],
-                      default_value=[(SettingsConstants.ALT_NETWORK__ERC20,
-                          SettingsConstants.ALT_NETWORK__TRC20)]),
+                      default_value=[]),
 
         SettingsEntry(category=SettingsConstants.CATEGORY__FEATURES,
                       attr_name=SettingsConstants.SETTING__SMARTCARD_SUPPORT,
