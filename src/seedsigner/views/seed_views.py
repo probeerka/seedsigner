@@ -2105,12 +2105,6 @@ class SeedOptionsView(View):
             self.controller.resume_main_flow = Controller.FLOW__ADDRESS_EXPLORER
             return Destination(SeedExportXpubScriptTypeView, view_args=dict(seed_num=self.seed_num, sig_type=SettingsConstants.SINGLE_SIG))
 
-        elif button_data[selected_menu_num] == self.ETH_ADDRESSES:
-            return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
-
-        elif button_data[selected_menu_num] == self.TRX_ADDRESSES:
-            return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
-
         elif button_data[selected_menu_num] == self.CONNECT_RABBY:
             from seedsigner.views.evm_sign_views import EvmExportXpubView
             return Destination(EvmExportXpubView, view_args=dict(seed_num=self.seed_num))
