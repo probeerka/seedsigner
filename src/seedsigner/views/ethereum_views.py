@@ -1,3 +1,4 @@
+from seedsigner.gui.screens.tools_screens import ToolsAddressExplorerAddressListScreen
 from dataclasses import dataclass
 from seedsigner.models.ethereum import derive_ethereum_addresses
 from seedsigner.models.encode_qr import GenericStaticQrEncoder
@@ -66,18 +67,16 @@ class EthereumAddressExplorerView(View):
             count=10,
         )
 
-        button_data = [
-            ButtonOption(f"{a['index']}  {a['address'][:10]}...{a['address'][-6:]}")
-            for a in addresses
-        ]
+        addr_strings = [a['address'] for a in addresses]
 
         selected = self.run_screen(
-            ButtonListScreen,
+            ToolsAddressExplorerAddressListScreen,
             title="ETH Addresses",
-            button_data=button_data,
-            is_bottom_list=True,
-
+            start_index=0,
+            addresses=addr_strings,
         )
+        if selected == len(addr_strings):
+            selected = None  # Next button — ignore for now
 
         if selected == RET_CODE__BACK_BUTTON:
             return Destination(MainMenuView)

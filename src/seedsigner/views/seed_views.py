@@ -2011,8 +2011,6 @@ class SeedOptionsView(View):
     EXPORT_XPUB = ButtonOption("Export Xpub")
     EXPLORER = ButtonOption("Address Explorer")
     SIGN_MESSAGE = ButtonOption("Sign Message")
-    ETH_ADDRESSES = ButtonOption("Show ETH Addrs")
-    TRX_ADDRESSES = ButtonOption("Show TRX Addrs")
     CONNECT_RABBY  = ButtonOption("Connect Rabby")
     SIGN_EVM_TX    = ButtonOption("Sign EVM TX")
     BACKUP = ButtonOption("Backup Seed", right_icon_name=SeedSignerIconConstants.CHEVRON_RIGHT)
@@ -2070,8 +2068,6 @@ class SeedOptionsView(View):
 
         button_data.append(self.EXPLORER)
         button_data.append(self.BACKUP)
-        button_data.append(self.ETH_ADDRESSES)
-        button_data.append(self.TRX_ADDRESSES)
         button_data.append(self.CONNECT_RABBY)
         button_data.append(self.SIGN_EVM_TX)
 
@@ -2285,6 +2281,16 @@ class SeedExportXpubScriptTypeView(View):
             if script_type in self.settings.get_value(SettingsConstants.SETTING__SCRIPT_TYPES):
                 button_data.append(ButtonOption(display_name, return_data=script_type))
 
+        ETH_EXPLORER = ButtonOption("ETH Addresses", return_data="eth")
+        TRX_EXPLORER = ButtonOption("TRX Addresses", return_data="trx")
+
+        if self.controller.resume_main_flow == Controller.FLOW__ADDRESS_EXPLORER:
+            alt_networks = self.settings.get_value(SettingsConstants.SETTING__ALT_NETWORKS)
+            if SettingsConstants.ALT_NETWORK__ERC20 in alt_networks:
+                button_data.append(ETH_EXPLORER)
+            if SettingsConstants.ALT_NETWORK__TRC20 in alt_networks:
+                button_data.append(TRX_EXPLORER)
+
         selected_menu_num = self.run_screen(
             ButtonListScreen,
             title=title,
@@ -2317,6 +2323,10 @@ class SeedExportXpubScriptTypeView(View):
             else:
                 if self.controller.resume_main_flow == Controller.FLOW__ADDRESS_EXPLORER:
                     del args["sig_type"]
+                    if button_data[selected_menu_num].return_data == "eth":
+                        return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+                    elif button_data[selected_menu_num].return_data == "trx":
+                        return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
                     return Destination(ToolsAddressExplorerAddressTypeView, view_args=args)
                 else:
                     return Destination(SeedExportXpubCoordinatorView, view_args=args)
