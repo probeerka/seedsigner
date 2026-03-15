@@ -6,7 +6,7 @@ run-name: >-
       github.event.inputs.target || 'pi0',
       github.event.inputs['app-repo'] || github.repository,
       github.event.inputs['source-ref'],
-      github.event.inputs['os-repo'] || 'probeerka/seedsigner-os',
+      github.event.inputs['os-repo'] || '3rdIteration/seedsigner-os',
       github.event.inputs['os-ref'],
       (fromJSON(github.event.inputs.smartcard || 'true') && 'enabled') || 'disabled'
     )
@@ -29,7 +29,7 @@ on:
       os-repo:
         description: The repository containing the SeedSigner OS sources
         required: false
-        default: probeerka/seedsigner-os
+        default: 3rdIteration/seedsigner-os
       os-ref:
         description: The seedsigner-os ref (tag/branch/sha1) to use
         default: main
@@ -82,7 +82,7 @@ jobs:
           github.event.inputs.target || 'pi0',
           github.event.inputs['app-repo'] || github.repository,
           github.event.inputs['source-ref'],
-          github.event.inputs['os-repo'] || 'probeerka/seedsigner-os',
+          github.event.inputs['os-repo'] || '3rdIteration/seedsigner-os',
           github.event.inputs['os-ref'],
           (fromJSON(github.event.inputs.smartcard || 'true') && 'enabled') || 'disabled'
         )
@@ -102,7 +102,7 @@ jobs:
       - name: checkout seedsigner-os
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs['os-repo'] || 'probeerka/seedsigner-os' }}
+          repository: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs['os-repo'] || '3rdIteration/seedsigner-os' }}
           # use the os-ref input parameter in case of workflow_dispatch or default to main in case of cron triggers
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.os-ref || 'main' }}
           submodules: true
