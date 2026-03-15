@@ -122,13 +122,19 @@ def gwei(wei: int) -> str:
     return f"{wei / 10**9:.2f} Gwei"
 
 CHAIN_NAMES = {
-    1:     "Ethereum",
-    56:    "BSC",
-    137:   "Polygon",
-    42161: "Arbitrum",
-    10:    "Optimism",
-    43114: "Avalanche",
-    8453:  "Base",
+    1:        "Ethereum",
+    56:       "BSC",
+    137:      "Polygon",
+    42161:    "Arbitrum",
+    10:       "Optimism",
+    43114:    "Avalanche",
+    8453:     "Base",
+    # Testnets
+    11155111: "Sepolia",
+    80001:    "Mumbai",
+    97:       "BSC Testnet",
+    421614:   "Arb Sepolia",
+    84532:    "Base Sepolia",
 }
 
 def chain_name(chain_id: int) -> str:

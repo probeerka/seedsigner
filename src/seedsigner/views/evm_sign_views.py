@@ -37,10 +37,37 @@ class EvmExportXpubView(View):
             account=self.account,
         )
 
-        self.run_screen(
-            QRDisplayScreen,
-            qr_encoder=UrFountainQrEncoder(ur_encoder=ur_encoder),
-        )
+        from seedsigner.models.settings import Settings, SettingsConstants
+        display_config = Settings.get_instance().get_value(
+            SettingsConstants.SETTING__DISPLAY_CONFIGURATION, default_if_none=True)
+        if display_config.startswith("desktop"):
+            # Desktop: save animated GIF and open it
+            enc = UrFountainQrEncoder(ur_encoder=ur_encoder)
+            frames = []
+            for _ in range(enc.seq_len()):
+                img = enc.next_part_image(300, 300, border=4, background_color="ffffff")
+                frames.append(img)
+            gif_path = "/tmp/rabby_connect.gif"
+            frames[0].save(
+                gif_path,
+                save_all=True,
+                append_images=frames[1:],
+                loop=0,
+                duration=200,
+            )
+            import subprocess
+            subprocess.Popen(["xdg-open", gif_path])
+            self.run_screen(
+                ButtonListScreen,
+                title="Connect Rabby",
+                button_data=[ButtonOption("Done")],
+                show_back_button=True,
+            )
+        else:
+            self.run_screen(
+                QRDisplayScreen,
+                qr_encoder=UrFountainQrEncoder(ur_encoder=ur_encoder),
+            )
 
         return Destination(MainMenuView)
 

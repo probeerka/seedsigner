@@ -555,8 +555,30 @@ class Controller(Singleton):
     def is_screensaver_running(self):
         return self.screensaver is not None and self.screensaver.is_running
 
+    @property
+    def is_qr_display_running(self):
+        from seedsigner.gui.screens.screen import QRDisplayScreen
+        # Проверяем есть ли активный QR экран в текущем view
+        try:
+            cur = self.back_stack[-1] if self.back_stack else None
+            return cur is not None and hasattr(cur, '_active_screen') and isinstance(cur._active_screen, QRDisplayScreen)
+        except Exception:
+            return False
+
+    @property
+    def is_qr_display_running(self):
+        from seedsigner.gui.screens.screen import QRDisplayScreen
+        # Проверяем есть ли активный QR экран в текущем view
+        try:
+            cur = self.back_stack[-1] if self.back_stack else None
+            return cur is not None and hasattr(cur, '_active_screen') and isinstance(cur._active_screen, QRDisplayScreen)
+        except Exception:
+            return False
+
 
     def start_screensaver(self):
+        import traceback
+        logger.info("start_screensaver called from:\n" + "".join(traceback.format_stack()[-5:]))
         # If a toast is running, tell it to give up the Renderer.lock; it will then
         # block until the screensaver is done, at which point the toast can re-acquire
         # the Renderer.lock and resume where it left off.

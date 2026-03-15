@@ -53,7 +53,6 @@ class TestTronAddresses(BaseTest):
         addrs = derive_tron_addresses(MNEMONIC)
         assert addrs[0]["path"] == "m/44'/195'/0'/0/0"
 
-
 class TestEvmTransaction(BaseTest):
     @classmethod
     def setup_class(cls):
@@ -61,6 +60,7 @@ class TestEvmTransaction(BaseTest):
 
     def test_parse_legacy_tx(self):
         """Should parse legacy (type 0) transaction."""
+        from evm_transaction import parse_transaction, _rlp_encode_item
         to_addr = bytes.fromhex("9858EfFD232B4033E47d90003D41EC34EcaEda94")
         raw = _rlp_encode_item([0, 20*10**9, 21000, to_addr, 10**15, b'', 1, 0, 0])
         tx = parse_transaction(raw)
@@ -70,10 +70,29 @@ class TestEvmTransaction(BaseTest):
         assert tx["to"].lower() == "0x9858effd232b4033e47d90003d41ec34ecaeda94"
 
     def test_wei_to_eth(self):
+        from evm_transaction import wei_to_eth
         assert wei_to_eth(0) == "0 ETH"
         assert "ETH" in wei_to_eth(10**18)
 
-    def test_chain_name(self):
+    def test_chain_names_mainnet(self):
+        from evm_transaction import chain_name
         assert chain_name(1) == "Ethereum"
         assert chain_name(137) == "Polygon"
+        assert chain_name(56) == "BSC"
+        assert chain_name(42161) == "Arbitrum"
+        assert chain_name(10) == "Optimism"
+        assert chain_name(43114) == "Avalanche"
+        assert chain_name(8453) == "Base"
+
+    def test_chain_names_testnet(self):
+        from evm_transaction import chain_name
+        assert chain_name(11155111) == "Sepolia"
+        assert chain_name(80001) == "Mumbai"
+        assert chain_name(97) == "BSC Testnet"
+        assert chain_name(421614) == "Arb Sepolia"
+        assert chain_name(84532) == "Base Sepolia"
+
+    def test_chain_name_unknown(self):
+        from evm_transaction import chain_name
+        assert chain_name(99999) == "Chain 99999"
 
