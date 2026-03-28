@@ -577,8 +577,6 @@ class Controller(Singleton):
 
 
     def start_screensaver(self):
-        import traceback
-        logger.info("start_screensaver called from:\n" + "".join(traceback.format_stack()[-5:]))
         # If a toast is running, tell it to give up the Renderer.lock; it will then
         # block until the screensaver is done, at which point the toast can re-acquire
         # the Renderer.lock and resume where it left off.

@@ -851,9 +851,6 @@ class QRDisplayScreen(BaseScreen):
 
 
         def run(self):
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info('QRDisplayThread started')
             from seedsigner.models.settings import Settings
             settings = Settings.get_instance()
             cur_brightness_setting = settings.get_value(SettingsConstants.SETTING__QR_BRIGHTNESS_TIPS)
@@ -879,15 +876,9 @@ class QRDisplayScreen(BaseScreen):
                         # brightness tip is stowed.
                         self.qr_encoder.restart()
                         pending_encoder_restart = False
-                    try:
-                        image = self.qr_encoder.next_part_image(240, 240, border=2, background_color=hex_color)
-                    except Exception as e:
-                        import logging
-                        logging.getLogger(__name__).error(f"QR render error: {e}", exc_info=True)
-                        return
+                    image = self.qr_encoder.next_part_image(240, 240, border=2, background_color=hex_color)
 
                 with self.renderer.lock:
-                    image.save('/tmp/qr_debug.png')
                     self.renderer.show_image(image)
 
                 # Target n held frames per second before rendering next QR image
