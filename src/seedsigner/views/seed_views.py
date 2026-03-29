@@ -43,8 +43,6 @@ from seedsigner.models.settings import Settings, SettingsConstants
 from seedsigner.models.settings_definition import SettingsDefinition
 from seedsigner.models.threads import BaseThread, ThreadsafeCounter
 from seedsigner.views.view import NotYetImplementedView, OptionDisabledView, View, Destination, BackStackView, MainMenuView
-from seedsigner.views.ethereum_views import EthereumAddressExplorerView
-from seedsigner.views.tron_views import TronAddressExplorerView
 
 from pysatochip.JCconstants import SEEDKEEPER_DIC_TYPE, SEEDKEEPER_DIC_ORIGIN, SEEDKEEPER_DIC_EXPORT_RIGHTS, BIP39_WORDLIST_DIC
 from pysatochip.util import dict_swap_keys_values
@@ -2318,9 +2316,11 @@ class SeedExportXpubScriptTypeView(View):
                 if self.controller.resume_main_flow == Controller.FLOW__ADDRESS_EXPLORER:
                     del args["sig_type"]
                     if button_data[selected_menu_num].return_data == "eth":
-                        return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+                        from seedsigner.views.ethereum_views import EthereumAddressExplorerView
+            return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
                     elif button_data[selected_menu_num].return_data == "trx":
-                        return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+                        from seedsigner.views.tron_views import TronAddressExplorerView
+            return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
                     return Destination(ToolsAddressExplorerAddressTypeView, view_args=args)
                 else:
                     return Destination(SeedExportXpubCoordinatorView, view_args=args)
