@@ -22,10 +22,6 @@ from seedsigner.views.screensaver import ScreensaverScreen
 from seedsigner.views.view import Destination
 from seedsigner.hardware.rng_monitor import HardwareRngHealthMonitor, HardwareRngMonitorThread
 from seedsigner.hardware.io_config import get_hardware_pin_mapping, get_hardware_profile_label
-from seedsigner.views.ethereum_views import  EthereumAddressExplorerView
-from seedsigner.views.ethereum_views import  EthereumAddressDetailView
-from seedsigner.views.tron_views import TronAddressExplorerView
-from seedsigner.views.tron_views import TronAddressDetailView
 
 logger = logging.getLogger(__name__)
 
@@ -554,26 +550,6 @@ class Controller(Singleton):
     @property
     def is_screensaver_running(self):
         return self.screensaver is not None and self.screensaver.is_running
-
-    @property
-    def is_qr_display_running(self):
-        from seedsigner.gui.screens.screen import QRDisplayScreen
-        # Проверяем есть ли активный QR экран в текущем view
-        try:
-            cur = self.back_stack[-1] if self.back_stack else None
-            return cur is not None and hasattr(cur, '_active_screen') and isinstance(cur._active_screen, QRDisplayScreen)
-        except Exception:
-            return False
-
-    @property
-    def is_qr_display_running(self):
-        from seedsigner.gui.screens.screen import QRDisplayScreen
-        # Проверяем есть ли активный QR экран в текущем view
-        try:
-            cur = self.back_stack[-1] if self.back_stack else None
-            return cur is not None and hasattr(cur, '_active_screen') and isinstance(cur._active_screen, QRDisplayScreen)
-        except Exception:
-            return False
 
 
     def start_screensaver(self):

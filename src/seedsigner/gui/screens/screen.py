@@ -882,9 +882,6 @@ class QRDisplayScreen(BaseScreen):
                     self.renderer.show_image(image)
 
                 # Target n held frames per second before rendering next QR image
-                # Reset screensaver timer so it doesn't activate during QR display
-                from seedsigner.hardware.buttons import HardwareButtons
-                HardwareButtons.get_instance().update_last_input_time()
                 time.sleep(5 / 30.0)
 
 
