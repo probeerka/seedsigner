@@ -2317,10 +2317,10 @@ class SeedExportXpubScriptTypeView(View):
                     del args["sig_type"]
                     if button_data[selected_menu_num].return_data == "eth":
                         from seedsigner.views.ethereum_views import EthereumAddressExplorerView
-            return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+                        return Destination(EthereumAddressExplorerView, view_args=dict(seed_num=self.seed_num))
                     elif button_data[selected_menu_num].return_data == "trx":
                         from seedsigner.views.tron_views import TronAddressExplorerView
-            return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
+                        return Destination(TronAddressExplorerView, view_args=dict(seed_num=self.seed_num))
                     return Destination(ToolsAddressExplorerAddressTypeView, view_args=args)
                 else:
                     return Destination(SeedExportXpubCoordinatorView, view_args=args)
