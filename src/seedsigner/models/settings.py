@@ -136,10 +136,17 @@ class Settings(Singleton):
 
             settings._data = SettingsDefinition.get_defaults()
 
-            # Load persisted runtime settings first if available.
+            # Compute platform-detected defaults once, upfront.
+            platform_defaults = {
+                SettingsConstants.SETTING__DISPLAY_CONFIGURATION: Settings.get_platform_default_display_config(),
+                SettingsConstants.SETTING__CAMERA_ROTATION: Settings.get_platform_default_camera_rotation(),
+            }
+
+            # Load user-persisted or template settings.
+            loaded = None
             if os.path.exists(Settings.SETTINGS_FILENAME):
                 with open(Settings.SETTINGS_FILENAME) as settings_file:
-                    settings.update(json.load(settings_file), persist=False)
+                    loaded = json.load(settings_file)
             else:
                 # Fall back to default template settings on first run.
                 # Flow/unit tests expect deterministic in-code defaults rather than
@@ -148,7 +155,19 @@ class Settings(Singleton):
                     template_path = Settings.get_default_settings_filename()
                     if os.path.exists(template_path):
                         with open(template_path) as settings_file:
-                            settings.update(json.load(settings_file), persist=False)
+                            loaded = json.load(settings_file)
+
+            if loaded is not None:
+                # Platform defaults fill gaps the user/template hasn't
+                # explicitly set; user settings take priority.
+                for key, value in platform_defaults.items():
+                    loaded.setdefault(key, value)
+                settings.update(loaded, persist=False)
+            else:
+                # No settings file — apply platform defaults over code
+                # defaults directly.
+                for key, value in platform_defaults.items():
+                    settings._data[key] = value
 
             # Setup multilanguage support
             path = os.path.join(
@@ -163,8 +182,6 @@ class Settings(Singleton):
             # Load default/persistent locale setting
             settings.load_locale()
 
-            settings._data[SettingsConstants.SETTING__DISPLAY_CONFIGURATION] = Settings.get_platform_default_display_config()
-            settings._data[SettingsConstants.SETTING__CAMERA_ROTATION] = Settings.get_platform_default_camera_rotation()
             detected_hardware = Settings.get_platform_default_hardware_config()
 
             system_type, system_variant = _get_system_type_and_variant(
@@ -227,16 +244,24 @@ class Settings(Singleton):
         for entry in data.split()[split_index:]:
             abbreviated_name, value = entry.split("=")
 
-            # Parse multi-value settings; numeric-ize where needed
+            # Parse multi-value settings; numeric-ize where needed.
+            # Use try/except instead of .isdigit() because .isdigit() returns
+            # True for non-ASCII Unicode digit characters (e.g. superscript ¹²³)
+            # that int()/float() cannot convert, causing a ValueError.
             if "," in value:
                 values_updated = []
                 for v in value.split(","):
-                    if v.replace(".", "", 1).isdigit():
+                    try:
                         v = float(v) if "." in v else int(v)
+                    except ValueError:
+                        pass
                     values_updated.append(v)
                 value = values_updated
-            elif value.replace(".", "", 1).isdigit():
-                value = float(value) if "." in value else int(value)
+            else:
+                try:
+                    value = float(value) if "." in value else int(value)
+                except ValueError:
+                    pass
             
             # Replace abbreviated name with full attr_name
             settings_entry = SettingsDefinition.get_settings_entry_by_abbreviated_name(abbreviated_name)

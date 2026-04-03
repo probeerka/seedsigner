@@ -521,15 +521,15 @@ class DecodeQR:
             from importlib import import_module
             slip39_wordlist = import_module("shamir_mnemonic.wordlist").WORDLIST
 
-            if all(x in wordlist for x in s.strip().split(" ")):
+            if all(x in wordlist for x in s.strip().lower().split()):
                 # checks if all words in list are in bip39 word list
                 return QRType.SEED__MNEMONIC
 
-            elif all(x in _4LETTER_WORDLIST for x in s.strip().split(" ")):
+            elif all(x in _4LETTER_WORDLIST for x in s.strip().lower().split()):
                 # checks if all 4 letter words are in list are in 4 letter bip39 word list
                 return QRType.SEED__FOUR_LETTER_MNEMONIC
 
-            elif all(x in slip39_wordlist for x in s.strip().lower().split(" ")):
+            elif all(x in slip39_wordlist for x in s.strip().lower().split()):
                 return QRType.SEED__SLIP39
 
             elif DecodeQR.is_base43_psbt(s):
@@ -963,7 +963,10 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
                 for i in range(0, num_words):
                     index = int(segment[i * 4: (i*4) + 4])
                     word = self.wordlist[index]
-                    self.seed_phrase.append(word)
+                    # Create an independent copy so that any future
+                    # wipe_list() won't corrupt the shared global
+                    # wordlist strings via wipe_string/ctypes.memset.
+                    self.seed_phrase.append("".join(word))
                 if len(self.seed_phrase) > 0:
                     if not self.has_valid_word_count():
                         return DecodeQRStatus.INVALID
@@ -992,7 +995,7 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
 
         elif qr_type == QRType.SEED__MNEMONIC:
             try:
-                seed_phrase_list = self.seed_phrase = segment.strip().split(" ")
+                seed_phrase_list = self.seed_phrase = segment.strip().lower().split()
                 if not self.has_valid_word_count():
                     return DecodeQRStatus.INVALID
 
@@ -1023,12 +1026,14 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
 
         elif qr_type == QRType.SEED__FOUR_LETTER_MNEMONIC:
             try:
-                seed_phrase_list = segment.strip().split(" ")
+                seed_phrase_list = segment.strip().lower().split()
                 words = []
                 for s in seed_phrase_list:
                     # TODO: Pre-calculate this once on startup
                     _4LETTER_WORDLIST = [word[:4].strip() for word in self.wordlist]
-                    words.append(self.wordlist[_4LETTER_WORDLIST.index(s)])
+                    # Create an independent copy to avoid holding a
+                    # direct reference to the shared global wordlist.
+                    words.append("".join(self.wordlist[_4LETTER_WORDLIST.index(s)]))
 
                 # embit mnemonic code to validate
                 seed = Seed(words, passphrase="", wordlist_language_code=self.wordlist_language_code)

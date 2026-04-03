@@ -40,7 +40,8 @@ The table below uses standard 40-pin physical numbering and highlights:
 
 ## Waveshare SPI display pin notes
 
-For the Waveshare 1.3" LCD HAT on a GPIO40 header:
+The Waveshare 1.3" LCD HAT (ST7789, 240×240) and 1.44" LCD HAT (ST7735S,
+128×128) share the same GPIO40 header pinout:
 - `SPI0_MOSI`: pin `19` (`GPIO10`)
 - `SPI0_SCLK`: pin `23` (`GPIO11`)
 - `CS` / `LCD-CS` (`SPI0_CE0`): pin `24` (`GPIO8`)
@@ -50,7 +51,16 @@ For the Waveshare 1.3" LCD HAT on a GPIO40 header:
 - Power: pin `1` (`3V3`)
 - Ground: e.g. pin `6` (`GND`)
 
-These are the standard Waveshare/RPi-style assignments that the `RPI_40` profile follows.
+Both HATs use the same `RPI_40` hardware profile — the only difference is the
+display driver setting:
+
+| HAT | Display setting | Driver |
+|-----|----------------|--------|
+| 1.3" LCD HAT (240×240) | `st7789_240x240` (default) | `ST7789.py` |
+| 1.44" LCD HAT (128×128) | `st7735_128x128` | `ST7735.py` |
+
+To use the 1.44" HAT, change the **Display type** setting to `st7735 128x128`
+(or use a SettingsQR with `disp_conf=st7735_128x128`).
 
 ### CS and the three wiring options
 
@@ -120,7 +130,7 @@ Values shown are exactly how mappings are stored in `io_config.json`.
 | `RPI_40` | `rpi_40` | `["/dev/gpiochip0",25] / ["/dev/gpiochip0",27] / ["/dev/gpiochip0",24]` | `KEY_UP ["/dev/gpiochip0",6,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip0",19,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip0",5,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip0",26,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip0",13,"pull_up"]`, `KEY1 ["/dev/gpiochip0",21,"pull_up"]`, `KEY2 ["/dev/gpiochip0",20,"pull_up"]`, `KEY3 ["/dev/gpiochip0",16,"pull_up"]` | `480x480`, `4fps` |
 | `RPI_26` | `rpi_26` | `["/dev/gpiochip0",25] / ["/dev/gpiochip0",27] / ["/dev/gpiochip0",24]` | `KEY_UP ["/dev/gpiochip0",3,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip0",17,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip0",2,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip0",22,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip0",4,"pull_up"]`, `KEY1 ["/dev/gpiochip0",23,"pull_up"]`, `KEY2 ["/dev/gpiochip0",18,"pull_up"]`, `KEY3 ["/dev/gpiochip0",14,"pull_up"]` | `480x480`, `4fps` |
 | `FOX_22` | `luckfox_22` | `["/dev/gpiochip1",20] / ["/dev/gpiochip1",19] / "disabled"` | `KEY_UP ["/dev/gpiochip1",25,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip1",23,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip1",24,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip0",4,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip1",22,"pull_up"]`, `KEY1 ["/dev/gpiochip4",16,"pull_up"]`, `KEY2 ["/dev/gpiochip4",17,"pull_up"]`, `KEY3 ["/dev/gpiochip1",21,"pull_up"]` | `/dev/video12`, `GREY`, `6fps` |
-| `FOX_40` | `luckfox_40` | `["/dev/gpiochip1",24] / ["/dev/gpiochip1",25] / ["/dev/gpiochip2",8]` | `KEY_UP ["/dev/gpiochip1",26,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip1",21,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip1",27,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip1",22,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip1",20,"pull_up"]`, `KEY1 ["/dev/gpiochip1",23,"pull_up"]`, `KEY2 ["/dev/gpiochip1",11,"pull_up"]`, `KEY3 ["/dev/gpiochip1",10,"pull_up"]` | `/dev/video12`, `GREY`, `6fps` |
+| `FOX_40` | `luckfox_40` | `["/dev/gpiochip2",8] / ["/dev/gpiochip1",24] / ["/dev/gpiochip1",25]` | `KEY_UP ["/dev/gpiochip2",9,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip1",26,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip1",19,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip1",20,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip1",27,"pull_up"]`, `KEY1 ["/dev/gpiochip1",23,"pull_up"]`, `KEY2 ["/dev/gpiochip1",22,"pull_up"]`, `KEY3 ["/dev/gpiochip1",21,"pull_up"]` | `/dev/video12`, `GREY`, `6fps` |
 | `FOX_PI` | `luckfox_pi` | `["/dev/gpiochip1",27] / ["/dev/gpiochip1",24] / ["/dev/gpiochip2",6]` | `KEY_UP ["/dev/gpiochip3",25,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip0",1,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip3",26,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip0",0,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip1",20,"pull_up"]`, `KEY1 ["/dev/gpiochip4",17,"pull_up"]`, `KEY2 ["/dev/gpiochip3",27,"pull_up"]`, `KEY3 ["/dev/gpiochip1",23,"pull_up"]` | `/dev/video12`, `GREY`, `6fps` |
 | `LC_LAFRITE` | `lc_lafrite` | `["/dev/gpiochip1",79] / ["/dev/gpiochip1",20] / ["/dev/gpiochip1",25]` | `KEY_UP ["/dev/gpiochip0",2,"pull_up"]`, `KEY_DOWN ["/dev/gpiochip1",86,"pull_up"]`, `KEY_LEFT ["/dev/gpiochip1",76,"pull_up"]`, `KEY_RIGHT ["/dev/gpiochip1",84,"pull_up"]`, `KEY_PRESS ["/dev/gpiochip1",85,"pull_up"]`, `KEY1 ["/dev/gpiochip1",83,"pull_up"]`, `KEY2 ["/dev/gpiochip1",82,"pull_up"]`, `KEY3 ["/dev/gpiochip1",81,"pull_up"]` | `/dev/video1`, `1280x720`, `YUYV`, `4fps` |
 
@@ -166,3 +176,4 @@ Values shown are exactly how mappings are stored in `io_config.json`.
 6. Validate locally:
    - `python -m json.tool src/seedsigner/hardware/io_config.json`
    - `pytest -q tests/test_io_config_profiles.py tests/test_luckfox_camera_backend.py`
+
