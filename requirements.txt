@@ -18,4 +18,5 @@ certifi==2025.7.14
 six==1.17.0
 cffi==1.17.1
 pycparser==2.22
+cbor2
 shamir-mnemonic==0.3.0

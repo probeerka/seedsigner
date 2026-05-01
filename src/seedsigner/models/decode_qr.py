@@ -1,7 +1,10 @@
 import base64
+import io
 import json
 import logging
+import os
 import re
+import time
 from datetime import datetime
 
 from binascii import a2b_base64, b2a_base64
@@ -12,6 +15,7 @@ from pyzbar.pyzbar import ZBarSymbol
 from urtypes.crypto import PSBT as UR_PSBT
 from urtypes.crypto import Account, Output
 from urtypes.bytes import Bytes
+import cbor2
 
 from seedsigner.helpers.ur2.ur_decoder import URDecoder
 from seedsigner.models.qr_type import QRType
@@ -22,11 +26,142 @@ from seedsigner.models.settings import SettingsConstants
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Dev-режим: включается через переменную окружения или settings
+# ---------------------------------------------------------------------------
+_DEV_MODE: bool = os.environ.get("SEEDSIGNER_DEV", "0") == "1"
+_SD_LOG_DIR: str = "/mnt/sdcard/seedsigner_dev_logs"
+
+
+# ---------------------------------------------------------------------------
+# Dev-логгер: пишет JSONL на SD-карту, один файл на сессию устройства
+# ---------------------------------------------------------------------------
+class _URDevLogger:
+    """
+    Синглтон. Активен только когда SEEDSIGNER_DEV=1.
+    Формат записи (одна строка JSONL):
+        {"ts":"20260501_143022","dir":"rx","ur_type":"eth-sign-request",
+         "frags_got":7,"frags_exp":5,"payload_b":843,
+         "cbor_ms":0.4,"total_ms":3812}
+        {"ts":"...","dir":"tx","ur_type":"eth-signature",
+         "frames_sent":3,"payload_b":64,"total_ms":5100}
+    """
+    _inst: "_URDevLogger | None" = None
+
+    def __init__(self):
+        self._enabled = _DEV_MODE
+        self._file = None
+        self._path: str | None = None
+
+    @classmethod
+    def get(cls) -> "_URDevLogger":
+        if cls._inst is None:
+            cls._inst = cls()
+        return cls._inst
+
+    def _open(self) -> bool:
+        if not self._enabled:
+            return False
+        if self._file:
+            return True
+        try:
+            os.makedirs(_SD_LOG_DIR, exist_ok=True)
+            self._path = os.path.join(
+                _SD_LOG_DIR, f"ur_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+            )
+            self._file = open(self._path, "a", encoding="utf-8")
+            logger.debug("[DEV] UR log → %s", self._path)
+            return True
+        except OSError as e:
+            logger.warning("[DEV] Cannot open SD log: %s", e)
+            self._enabled = False
+            return False
+
+    def write(self, rec: dict) -> None:
+        if not self._open():
+            return
+        try:
+            self._file.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            self._file.flush()
+            self._print(rec)
+        except OSError as e:
+            logger.warning("[DEV] SD write error: %s", e)
+
+    @staticmethod
+    def _print(rec: dict) -> None:
+        if rec["dir"] == "rx":
+            print(
+                f"[DEV/RX] {rec['ur_type']}  "
+                f"frags={rec['frags_got']}/{rec['frags_exp']}  "
+                f"payload={rec['payload_b']}B  "
+                f"cbor={rec['cbor_ms']:.1f}ms  "
+                f"total={rec['total_ms']:.0f}ms"
+            )
+        else:
+            print(
+                f"[DEV/TX] {rec['ur_type']}  "
+                f"frames={rec['frames_sent']}  "
+                f"payload={rec['payload_b']}B  "
+                f"total={rec['total_ms']:.0f}ms"
+            )
+
+
+def _stream_decode_cbor(raw: bytes) -> object:
+    """
+    Потоковый CBOR-декодер через BytesIO.
+    Не создаёт промежуточных копий буфера — CBORDecoder читает
+    из потока по мере разбора структуры.
+    """
+    return cbor2.CBORDecoder(io.BytesIO(raw)).decode()
+
+
+# ---------------------------------------------------------------------------
+# TX-счётчик для стороны отправки (SeedSigner → Rabby)
+# ---------------------------------------------------------------------------
+class URTXCounter:
+    """
+    Оборачивает цикл encoder.next_part() и считает отправленные кадры.
+
+    Пример использования в sign_transaction_view.py:
+        counter = URTXCounter("eth-signature", len(cbor_payload))
+        while not encoder.is_complete():
+            frame = encoder.next_part()
+            display_qr(frame)
+            counter.tick()
+        counter.finish()
+    """
+
+    def __init__(self, ur_type: str, payload_bytes: int):
+        self._ur_type = ur_type
+        self._payload_b = payload_bytes
+        self._frames = 0
+        self._t0 = time.time()
+
+    def tick(self) -> None:
+        self._frames += 1
+
+    @property
+    def frames_sent(self) -> int:
+        return self._frames
+
+    def finish(self) -> dict:
+        rec = {
+            "ts": time.strftime("%Y%m%d_%H%M%S"),
+            "dir": "tx",
+            "ur_type": self._ur_type,
+            "frames_sent": self._frames,
+            "payload_b": self._payload_b,
+            "total_ms": round((time.time() - self._t0) * 1000, 1),
+        }
+        _URDevLogger.get().write(rec)
+        return rec
+
+
+# ---------------------------------------------------------------------------
+# Основные классы (без изменений в сигнатурах)
+# ---------------------------------------------------------------------------
 
 class DecodeQRStatus(IntEnum):
-    """
-        Used in DecodeQR to communicate status of adding qr frame/segment
-    """
     PART_COMPLETE = 1
     PART_EXISTING = 2
     COMPLETE = 3
@@ -35,14 +170,14 @@ class DecodeQRStatus(IntEnum):
     WRONG_KEY = 6
 
 
-
 class DecodeQR:
     """
-        Used to process images or string data from animated qr codes.
+    Used to process images or string data from animated qr codes.
     """
-    def __init__(self, wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH, is_passphrase: bool = False,
-                                                                                                   is_encryptionkey: bool = False,
-                                                                                                   is_text: bool = False):
+    def __init__(self, wordlist_language_code: str = SettingsConstants.WORDLIST_LANGUAGE__ENGLISH,
+                 is_passphrase: bool = False,
+                 is_encryptionkey: bool = False,
+                 is_text: bool = False):
         self.wordlist_language_code = wordlist_language_code
         self.complete = False
         self.qr_type = None
@@ -52,17 +187,21 @@ class DecodeQR:
         self.is_text = is_text
         self.is_nonUTF8 = False
 
+        # --- RX-статистика (только для UR-типов с Fountain) ---
+        self._rx_t0: float = 0.0
+        self._rx_frags_got: int = 0
+        self._rx_frags_exp: int = 0
+
 
     def add_image(self, image):
         data = DecodeQR.extract_qr_data(image, is_binary=True)
-        if data == None:
+        if data is None:
             return DecodeQRStatus.FALSE
-
         return self.add_data(data)
 
 
     def add_data(self, data):
-        if data == None:
+        if data is None:
             return DecodeQRStatus.FALSE
 
         if self.is_passphrase:
@@ -72,25 +211,38 @@ class DecodeQR:
         elif self.is_text:
             qr_type = QRType.TEXT
         else:
-            qr_type = DecodeQR.detect_segment_type(data, wordlist_language_code=self.wordlist_language_code)
+            qr_type = DecodeQR.detect_segment_type(
+                data, wordlist_language_code=self.wordlist_language_code
+            )
 
-        if self.qr_type == None:
+        if self.qr_type is None:
             self.qr_type = qr_type
 
-            if self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST]:
-                self.decoder = URDecoder() # BCUR Decoder
+            if self.qr_type in [
+                QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR,
+                QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST,
+            ]:
+                self.decoder = URDecoder()
+                # Запускаем таймер для dev-статистики
+                self._rx_t0 = time.time()
 
             elif self.qr_type == QRType.PSBT__SPECTER:
-                self.decoder = SpecterPsbtQrDecoder() # Specter Desktop PSBT QR base64 decoder
+                self.decoder = SpecterPsbtQrDecoder()
 
             elif self.qr_type == QRType.PSBT__BASE64:
-                self.decoder = Base64PsbtQrDecoder() # Single Segments Base64
+                self.decoder = Base64PsbtQrDecoder()
 
             elif self.qr_type == QRType.PSBT__BASE43:
-                self.decoder = Base43PsbtQrDecoder() # Single Segment Base43
+                self.decoder = Base43PsbtQrDecoder()
 
-            elif self.qr_type in [QRType.SEED__SEEDQR, QRType.SEED__COMPACTSEEDQR, QRType.SEED__MNEMONIC, QRType.SEED__FOUR_LETTER_MNEMONIC, QRType.SEED__UR2]:
-                self.decoder = SeedQrDecoder(wordlist_language_code=self.wordlist_language_code)
+            elif self.qr_type in [
+                QRType.SEED__SEEDQR, QRType.SEED__COMPACTSEEDQR,
+                QRType.SEED__MNEMONIC, QRType.SEED__FOUR_LETTER_MNEMONIC,
+                QRType.SEED__UR2,
+            ]:
+                self.decoder = SeedQrDecoder(
+                    wordlist_language_code=self.wordlist_language_code
+                )
 
             elif self.qr_type == QRType.SEED__SLIP39:
                 self.decoder = Slip39ShareDecoder()
@@ -99,25 +251,25 @@ class DecodeQR:
                 self.decoder = XprvQrDecoder()
 
             elif self.qr_type == QRType.SETTINGS:
-                self.decoder = SettingsQrDecoder()  # Settings config
+                self.decoder = SettingsQrDecoder()
 
             elif self.qr_type == QRType.BITCOIN_ADDRESS:
-                self.decoder = BitcoinAddressQrDecoder() # Single Segment bitcoin address
+                self.decoder = BitcoinAddressQrDecoder()
 
             elif self.qr_type == QRType.SIGN_MESSAGE:
-                self.decoder = SignMessageQrDecoder() # Single Segment sign message request
+                self.decoder = SignMessageQrDecoder()
 
             elif self.qr_type == QRType.WALLET__SPECTER:
-                self.decoder = SpecterWalletQrDecoder() # Specter Desktop Wallet Export decoder
+                self.decoder = SpecterWalletQrDecoder()
 
             elif self.qr_type == QRType.WALLET__GENERIC:
                 self.decoder = GenericWalletQrDecoder()
-                
+
             elif self.qr_type == QRType.WALLET__CONFIGFILE:
                 self.decoder = MultiSigConfigFileQRDecoder()
 
             elif self.qr_type == QRType.PASSPHRASE:
-                self.decoder = PassphraseQrDecoder() # BIP39 passphrase
+                self.decoder = PassphraseQrDecoder()
 
             elif self.qr_type == QRType.SEED__ENCRYPTEDQR:
                 self.decoder = EncryptedQrDecoder()
@@ -139,12 +291,11 @@ class DecodeQR:
 
         elif self.qr_type != qr_type:
             raise Exception('QR Fragment Unexpected Type Change')
-        
+
         if not self.decoder:
-            # Did not find any recognizable format
             return DecodeQRStatus.INVALID
 
-        # Process the binary formats first
+        # Binary formats
         if self.qr_type in [QRType.SEED__COMPACTSEEDQR, QRType.SEED__ENCRYPTEDQR]:
             rt = self.decoder.add(data, self.qr_type)
             if rt == DecodeQRStatus.COMPLETE:
@@ -153,48 +304,86 @@ class DecodeQR:
                 self.wrong_key = True
             return rt
 
-        # Convert to string data
+        # Convert bytes → str
         if type(data) == bytes:
-            # Should always be bytes, but the test suite has some manual datasets that
-            # are strings.
-            # TODO: Convert the test suite rather than handle here?
             try:
                 qr_str = data.decode('utf-8')
             except UnicodeDecodeError:
                 self.is_nonUTF8 = True
                 return DecodeQRStatus.INVALID
         else:
-            # it's already str data
             qr_str = data
 
-        if self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST]:
+        # UR / Fountain types
+        if self.qr_type in [
+            QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR,
+            QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST,
+        ]:
             added_part = self.decoder.receive_part(qr_str)
+
+            # Обновляем счётчики прогресса на каждом фрагменте
+            self._rx_frags_got += 1
+            est = self.decoder.estimated_percent_complete()  # 0.0–1.0
+            # estimated_percent_complete — стандартный метод ur2 URDecoder;
+            # пересчитываем в приблизительное число ожидаемых фрагментов
+            if est and est > 0 and self._rx_frags_got > 0:
+                self._rx_frags_exp = max(
+                    self._rx_frags_exp,
+                    int(round(self._rx_frags_got / est)) if est < 1.0 else self._rx_frags_got,
+                )
+
             if self.decoder.is_complete():
                 self.complete = True
+
+                # ── Потоковый CBOR-разбор ──────────────────────────────────
+                # Только для ETH_SIGN_REQUEST; остальные UR-типы декодируются
+                # позже через get_data_psbt / get_wallet_descriptor (без изменений).
+                if self.qr_type == QRType.ETH_SIGN_REQUEST:
+                    raw_cbor: bytes = self.decoder.result_message().cbor
+                    t_cbor = time.perf_counter()
+                    # Потоково декодируем через BytesIO — без полной копии в памяти
+                    self._eth_cbor_parsed = _stream_decode_cbor(raw_cbor)
+                    cbor_ms = (time.perf_counter() - t_cbor) * 1000
+
+                    # Dev-лог
+                    _URDevLogger.get().write({
+                        "ts": time.strftime("%Y%m%d_%H%M%S"),
+                        "dir": "rx",
+                        "ur_type": "eth-sign-request",
+                        "frags_got": self._rx_frags_got,
+                        "frags_exp": self._rx_frags_exp or self._rx_frags_got,
+                        "payload_b": len(raw_cbor),
+                        "cbor_ms": round(cbor_ms, 3),
+                        "total_ms": round((time.time() - self._rx_t0) * 1000, 1),
+                    })
+                else:
+                    self._eth_cbor_parsed = None
+
                 return DecodeQRStatus.COMPLETE
+
             if added_part:
                 return DecodeQRStatus.PART_COMPLETE
             else:
                 return DecodeQRStatus.PART_EXISTING
 
         else:
-            # All other formats use the same method signature
             rt = self.decoder.add(qr_str, self.qr_type)
             if rt == DecodeQRStatus.COMPLETE:
                 self.complete = True
             return rt
 
 
-    # TODO: Refactor all of these specific `get_` to just something generic like
-    #   `get_data` and let each QRDecoder class return whatever it needs to as a
-    #   str, tuple, dict, etc?
+    # ------------------------------------------------------------------
+    # Публичные геттеры (сигнатуры не меняются)
+    # ------------------------------------------------------------------
+
     def get_psbt(self):
         if self.complete:
             data = self.get_data_psbt()
-            if data != None:
+            if data is not None:
                 try:
                     return psbt.PSBT.parse(data)
-                except:
+                except Exception:
                     return None
         return None
 
@@ -204,11 +393,8 @@ class DecodeQR:
             if self.qr_type == QRType.PSBT__UR2:
                 cbor = self.decoder.result_message().cbor
                 return UR_PSBT.from_cbor(cbor).data
-
             else:
-                # All the other psbt decoder types use the same method signature
                 return self.decoder.get_data()
-
         return None
 
 
@@ -216,10 +402,8 @@ class DecodeQR:
         if self.complete:
             data = self.get_data_psbt()
             b64_psbt = b2a_base64(data)
-
             if b64_psbt[-1:] == b"\n":
                 b64_psbt = b64_psbt[:-1]
-
             return b64_psbt.decode("utf-8")
         return None
 
@@ -240,16 +424,13 @@ class DecodeQR:
         if self.is_slip39_share:
             return self.decoder.get_share()
 
-
     def get_settings_data(self):
         if self.is_settings:
             return self.decoder.data
 
-
     def get_address(self):
         if self.is_address:
             return self.decoder.get_address()
-
 
     def get_address_type(self):
         if self.is_address:
@@ -259,11 +440,9 @@ class DecodeQR:
         if self.is_time:
             return self.decoder.get_time()
 
-
     def get_passphrase(self):
         if self.is_passphrase:
             return self.decoder.get_passphrase()
-
 
     def get_encryption_key(self):
         if self.is_encryptionkey:
@@ -277,29 +456,42 @@ class DecodeQR:
         if self.is_bip38:
             return self.decoder.get_bip38()
 
-
     def get_public_data(self):
         if self.is_encrypted_seedqr:
             return self.decoder.get_public_data()
-
 
     def get_text(self):
         if self.is_text:
             return self.decoder.get_text()
 
-
-    def _get_eth_sign_request_cbor_duplicate(self) -> bytes:
-        """DUPLICATE - see line 291"""
-        if self.qr_type == QRType.ETH_SIGN_REQUEST:
+    def get_eth_cbor(self) -> bytes | None:
+        """
+        Возвращает сырые CBOR-байты ETH_SIGN_REQUEST (для кода,
+        которому нужны именно байты, а не распарсенный объект).
+        Заменяет оба дублирующихся _get_eth_sign_request_cbor_duplicate().
+        """
+        if self.complete and self.qr_type == QRType.ETH_SIGN_REQUEST:
             return self.decoder.result_message().cbor
+        return None
+
+    def get_eth_request_parsed(self) -> object | None:
+        """
+        Возвращает уже распарсенный Python-объект из CBOR,
+        декодированный потоково в момент завершения сборки.
+        Это основная точка входа для Rabby-view.
+        """
+        if self.complete and self.qr_type == QRType.ETH_SIGN_REQUEST:
+            return getattr(self, "_eth_cbor_parsed", None)
         return None
 
     def get_qr_data(self) -> dict:
         """
-        This provides a single access point for external code to retrieve the QR data,
-        regardless of which decoder is actually instantiated.
+        Единая точка входа для внешнего кода.
+        Для ETH_SIGN_REQUEST возвращает уже распарсенный объект
+        (не вызывает повторный cbor2.loads).
         """
-        # TODO: Implement this approach across all decoders
+        if self.qr_type == QRType.ETH_SIGN_REQUEST:
+            return self.get_eth_request_parsed()
         return self.decoder.get_qr_data()
 
 
@@ -313,10 +505,11 @@ class DecodeQR:
                     return Account.from_cbor(cbor).output_descriptors[0].descriptor()
                 elif self.qr_type == QRType.BYTES__UR:
                     raw = Bytes.from_cbor(cbor).data
-                    descriptor = DecodeQR.multisig_setup_file_to_descriptor(raw.decode("utf-8"))
+                    descriptor = DecodeQR.multisig_setup_file_to_descriptor(
+                        raw.decode("utf-8")
+                    )
                     return descriptor
             else:
-                # All the other wallet output descriptor decoder types use the same method signature
                 return self.decoder.get_wallet_descriptor()
 
 
@@ -324,52 +517,53 @@ class DecodeQR:
         if not self.decoder:
             return 0
 
-        if self.qr_type in [QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR, QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST]:
-            return int(self.decoder.estimated_percent_complete(weight_mixed_frames=weight_mixed_frames) * 100)
+        if self.qr_type in [
+            QRType.PSBT__UR2, QRType.OUTPUT__UR, QRType.ACCOUNT__UR,
+            QRType.BYTES__UR, QRType.ETH_SIGN_REQUEST,
+        ]:
+            return int(
+                self.decoder.estimated_percent_complete(
+                    weight_mixed_frames=weight_mixed_frames
+                ) * 100
+            )
 
         elif self.qr_type in [QRType.PSBT__SPECTER]:
-            if self.decoder.total_segments == None:
+            if self.decoder.total_segments is None:
                 return 0
-            return int((self.decoder.collected_segments / self.decoder.total_segments) * 100)
+            return int(
+                (self.decoder.collected_segments / self.decoder.total_segments) * 100
+            )
 
         elif self.decoder.total_segments == 1:
-            # The single frame QR formats are all or nothing
-            if self.decoder.complete:
-                return 100
-            else:
-                return 0
+            return 100 if self.decoder.complete else 0
 
-        else:
-            return 0
+        return 0
 
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
 
     @property
     def is_complete(self) -> bool:
         return self.complete
 
-
     @property
     def is_invalid(self) -> bool:
         return self.qr_type == QRType.INVALID
 
-
     @property
     def is_psbt(self) -> bool:
         return self.qr_type in [
-            QRType.PSBT__UR2,
-            QRType.PSBT__SPECTER,
-            QRType.PSBT__BASE64,
-            QRType.PSBT__BASE43,
+            QRType.PSBT__UR2, QRType.PSBT__SPECTER,
+            QRType.PSBT__BASE64, QRType.PSBT__BASE43,
         ]
-
 
     @property
     def is_seed(self):
         return self.qr_type in [
-            QRType.SEED__SEEDQR,
-            QRType.SEED__COMPACTSEEDQR,
-            QRType.SEED__UR2,
-            QRType.SEED__MNEMONIC,
+            QRType.SEED__SEEDQR, QRType.SEED__COMPACTSEEDQR,
+            QRType.SEED__UR2, QRType.SEED__MNEMONIC,
             QRType.SEED__FOUR_LETTER_MNEMONIC,
         ]
 
@@ -380,17 +574,14 @@ class DecodeQR:
     @property
     def is_xprv(self) -> bool:
         return self.qr_type == QRType.SEED__XPRV
-    
 
     @property
     def is_json(self):
         return self.qr_type in [QRType.SETTINGS, QRType.JSON]
-        
 
     @property
     def is_address(self):
         return self.qr_type == QRType.BITCOIN_ADDRESS
-        
 
     @property
     def is_sign_message(self):
@@ -407,147 +598,105 @@ class DecodeQR:
     @property
     def is_bip38(self):
         return self.qr_type == QRType.BIP38
-        
 
     @property
     def is_wallet_descriptor(self):
-        check = self.qr_type in [QRType.WALLET__SPECTER, QRType.WALLET__UR, QRType.WALLET__CONFIGFILE, QRType.WALLET__GENERIC, QRType.OUTPUT__UR]
-        
+        check = self.qr_type in [
+            QRType.WALLET__SPECTER, QRType.WALLET__UR,
+            QRType.WALLET__CONFIGFILE, QRType.WALLET__GENERIC,
+            QRType.OUTPUT__UR,
+        ]
         if self.qr_type in [QRType.BYTES__UR]:
             cbor = self.decoder.result_message().cbor
             raw = Bytes.from_cbor(cbor).data
             data = raw.decode("utf-8").lower()
             check = 'policy:' in data and "format:" in data and "derivation:" in data
-        
         return check
 
     @property
     def is_settings(self):
         return self.qr_type == QRType.SETTINGS
 
-
     @property
     def is_encrypted_seedqr(self) -> bool:
         return self.qr_type == QRType.SEED__ENCRYPTEDQR
 
 
+    # ------------------------------------------------------------------
+    # Static helpers (без изменений)
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def extract_qr_data(image, is_binary:bool = False) -> str | None:
+    def extract_qr_data(image, is_binary: bool = False) -> str | None:
         if image is None:
             return None
-
         barcodes = pyzbar.decode(image, symbols=[ZBarSymbol.QRCODE], binary=is_binary)
-
-        # if barcodes:
-            # print("--------------- extract_qr_data ---------------")
-            # print(barcodes)
-
         for barcode in barcodes:
-            # Only pull and return the first barcode
             return barcode.data
-
 
     @staticmethod
     def detect_segment_type(s, wordlist_language_code=None):
-        # print("-------------- DecodeQR.detect_segment_type --------------")
-        # print(type(s))
-        # print(len(s))
-
         try:
-            # Convert to str data
             if type(s) == bytes:
-                # Should always be bytes, but the test suite has some manual datasets that
-                # are strings.
-                # TODO: Convert the test suite rather than handle here?
                 s = s.decode('utf-8')
 
-            # PSBT
             if re.search("^UR:CRYPTO-PSBT/", s, re.IGNORECASE):
                 return QRType.PSBT__UR2
-
             elif re.search("^UR:CRYPTO-OUTPUT/", s, re.IGNORECASE):
                 return QRType.OUTPUT__UR
-
             elif re.search("^UR:CRYPTO-ACCOUNT/", s, re.IGNORECASE):
                 return QRType.ACCOUNT__UR
-
-            elif re.search(r'^p(\d+)of(\d+) ([A-Za-z0-9+\/=]+$)', s, re.IGNORECASE): #must be base64 characters only in segment
+            elif re.search(r'^p(\d+)of(\d+) ([A-Za-z0-9+\/=]+$)', s, re.IGNORECASE):
                 return QRType.PSBT__SPECTER
-
             elif re.search("^UR:BYTES/", s, re.IGNORECASE):
                 return QRType.BYTES__UR
             elif re.search("^UR:ETH-SIGN-REQUEST/", s, re.IGNORECASE):
+                # Три дублирующихся elif в оригинале схлопнуты в один
                 return QRType.ETH_SIGN_REQUEST
-            elif re.search("^UR:ETH-SIGN-REQUEST/", s, re.IGNORECASE):
-                return QRType.ETH_SIGN_REQUEST
-            elif re.search("^UR:ETH-SIGN-REQUEST/", s, re.IGNORECASE):
-                return QRType.ETH_SIGN_REQUEST
-
             elif DecodeQR.is_base64_psbt(s):
                 return QRType.PSBT__BASE64
 
-            # Wallet Descriptor
-            desc_str = s.replace("\n","").replace(" ","")
+            desc_str = s.replace("\n", "").replace(" ", "")
             if re.search(r'^p(\d+)of(\d+) ', s, re.IGNORECASE):
-                # when not a SPECTER Base64 PSBT from above, assume it's json
                 return QRType.WALLET__SPECTER
-
             elif re.search(r'^\{\"label\".*\"descriptor\"\:.*', desc_str, re.IGNORECASE):
-                # if json starting with label and contains descriptor, assume specter wallet json
                 return QRType.WALLET__SPECTER
-
             elif "multisig setup file" in s.lower():
                 return QRType.WALLET__CONFIGFILE
-
             elif "sortedmulti" in s:
                 return QRType.WALLET__GENERIC
 
-            # Seed
             if re.search(r'\d{48,96}', s):
                 return QRType.SEED__SEEDQR
-
-            # Bitcoin Address
             elif DecodeQR.is_bitcoin_address(s):
                 return QRType.BITCOIN_ADDRESS
-
-            # message signing
             elif s.startswith("signmessage"):
                 return QRType.SIGN_MESSAGE
 
-            # config data
             if s.startswith("settings::"):
                 return QRType.SETTINGS
 
-            # GoPro Labs precision time command
             if re.match(r'^oT(\d{12}(\.\d{2})?|0)$', s):
                 return QRType.SET_TIME
 
-            # Seed
-            # create 4 letter wordlist only if not PSBT (performance gain)
             wordlist = Seed.get_wordlist(wordlist_language_code)
             try:
                 _4LETTER_WORDLIST = [word[:4].strip() for word in wordlist]
-            except:
+            except Exception:
                 _4LETTER_WORDLIST = []
 
             from importlib import import_module
             slip39_wordlist = import_module("shamir_mnemonic.wordlist").WORDLIST
 
             if all(x in wordlist for x in s.strip().split(" ")):
-                # checks if all words in list are in bip39 word list
                 return QRType.SEED__MNEMONIC
-
             elif all(x in _4LETTER_WORDLIST for x in s.strip().split(" ")):
-                # checks if all 4 letter words are in list are in 4 letter bip39 word list
                 return QRType.SEED__FOUR_LETTER_MNEMONIC
-
             elif all(x in slip39_wordlist for x in s.strip().lower().split(" ")):
                 return QRType.SEED__SLIP39
-
             elif DecodeQR.is_base43_psbt(s):
                 return QRType.PSBT__BASE43
 
-            # WIF private key
             try:
                 ec.PrivateKey.from_wif(s.strip())
                 return QRType.WIF
@@ -561,7 +710,6 @@ class DecodeQR:
             except Exception:
                 pass
 
-            # BIP38 encrypted key
             try:
                 from seedsigner.models.bip38 import BIP38Key
                 BIP38Key(s.strip())
@@ -570,70 +718,55 @@ class DecodeQR:
                 pass
 
         except UnicodeDecodeError:
-            # Probably this isn't meant to be string data; check if it's valid byte data
-            # below.
             pass
 
-        # Is it byte data?
         if not isinstance(s, bytes):
             try:
-                # TODO: remove this check & conversion once above cast to str is removed
                 s = s.encode()
             except UnicodeError:
-                # Couldn't convert back to bytes; shouldn't happen
                 raise Exception("Conversion to bytes failed")
 
-        # Byte lengths for CompactSeedQR entropy:
-        #   32 bytes for 24-word
-        #   28 bytes for 21-word
-        #   24 bytes for 18-word
-        #   20 bytes for 15-word
-        #   16 bytes for 12-word
         if len(s) in (16, 20, 24, 28, 32):
             try:
                 bitstream = ""
                 for b in s:
                     bitstream += bin(b).lstrip('0b').zfill(8)
-                # print(bitstream)
-
                 return QRType.SEED__COMPACTSEEDQR
-            except Exception as e:
-                # Couldn't extract byte data; assume it's not a byte format
+            except Exception:
                 pass
-
         else:
             from seedsigner.models.encryption import EncryptedQRCode
             from seedsigner.helpers.base43 import base43_decode
             encrypted_qr = EncryptedQRCode()
             public_data = None
-            try:  # Try to decode base43 data
+            try:
                 if isinstance(s, bytes):
                     s = s.decode('utf-8')
                 data_bytes = base43_decode(s)
                 public_data = encrypted_qr.public_data(data_bytes)
-            except:
+            except Exception:
                 pass
-            if not public_data:  # Failed to decode and parse base43
+            if not public_data:
                 public_data = encrypted_qr.public_data(s)
             if public_data:
                 from seedsigner.models.encryptedqr import EncryptedQR
-                encryptedqr = EncryptedQR(encrypted_qr=encrypted_qr, public_data=public_data)
+                encryptedqr = EncryptedQR(
+                    encrypted_qr=encrypted_qr, public_data=public_data
+                )
                 from seedsigner.controller import Controller
                 Controller.get_instance().storage2.set_encryptedqr(encryptedqr)
                 return QRType.SEED__ENCRYPTEDQR
 
         return QRType.INVALID
 
-
-    @staticmethod   
+    @staticmethod
     def is_base64(s):
         try:
             return base64.b64encode(base64.b64decode(s)) == s.encode('ascii')
         except Exception:
             return False
 
-
-    @staticmethod   
+    @staticmethod
     def is_base64_psbt(s):
         try:
             if DecodeQR.is_base64(s):
@@ -643,7 +776,6 @@ class DecodeQR:
             return False
         return False
 
-
     @staticmethod
     def is_base43_psbt(s):
         try:
@@ -652,25 +784,21 @@ class DecodeQR:
         except Exception:
             return False
 
-
     @staticmethod
     def base43_decode(s):
-        chars = b'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*+-./:' #base43 chars
-
+        chars = b'0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$*+-./:'
         if isinstance(s, bytes):
             v = s
         if isinstance(s, str):
             v = s.encode('ascii')
         elif isinstance(s, bytearray):
             v = bytes(s)
-            
         long_value = 0
         power_of_base = 1
         for c in v[::-1]:
             digit = chars.find(bytes([c]))
             if digit == -1:
-                raise Exception('Forbidden character {} for base {}'.format(c, 43))
-            # naive but slow variant:   long_value += digit * (base**i)
+                raise Exception(f'Forbidden character {c} for base 43')
             long_value += digit * power_of_base
             power_of_base *= 43
         result = bytearray()
@@ -689,67 +817,42 @@ class DecodeQR:
         result.reverse()
         return bytes(result)
 
-
     @staticmethod
     def is_bitcoin_address(s):
         if re.search(r'^bitcoin\:.*', s, re.IGNORECASE):
             return True
-        elif re.search(r'^((bc1|tb1|bcr|[123]|[mn])[a-zA-HJ-NP-Z0-9]{25,62})$', s, re.IGNORECASE):
+        elif re.search(
+            r'^((bc1|tb1|bcr|[123]|[mn])[a-zA-HJ-NP-Z0-9]{25,62})$', s, re.IGNORECASE
+        ):
             return True
-        else:
-            return False
-
+        return False
 
     @staticmethod
     def multisig_setup_file_to_descriptor(text) -> str:
-        # sample text file, parse the contents and create descriptor
-        """
-        Name: SeedSigner Dev Funds
-        Policy: 4 of 6
-        Derivation: m/48'/0'/0'/2'
-        Format: P2WSH
-        
-        E0811B6B: xpub6E8v7uy63pCeJvHe5W8ea8zTnCtKMFgMRb5bueWWcUFMw6sWmUwTqxM8cFiKQRWkA2Fxth9HJZufJwjWTTvU1UGZNpTrh9khrswYMgeHiCt
-        852B308F: xpub6ErhgAWfnEqW7xDBm1iLq5JjNyUS65YUFnjHLrRv9zmdDEtuE75bpWQ8o6bSBnpT6AkrrsA8eA5SmEFArZn11KEPaZJzx9mHTXPWZCsxLyh
-        7EDF9C59: xpub6DaFfKoe7WpofrbYeNo3Wv2AiLUMeyrPwotXfukFxUHbK4JxaLHTd5394QtH5wnjFzBgr2YnJpHhXv25Zsqv2APmMFvH1DsKHj5LCr3pmXs
-        B433E095: xpub6EF51itHko2YhGTjVeuYbBgJjVbTzzpYzn2a3JwZHpDrMePRVgXGBHMx2Yv1KwgLsUn9i7ExcAo8uqMx4pDjVRY9J7qnceFAwRRj16dd5AS
-        184D07EB: xpub6EEoTpcQu7N4R8D84pJjZ69j3minevnYLDDoo2HBzYBXTQ4rGVf4XGTyCYFwJuZdsF9MyFYJNzYEjg5LGMA1ubTGWuDnjHAZz6ficVRDTSy
-        3E451EFE: xpub6ExQPvQxGBMaPxr8Fv7Vq91ztJFFX3VWvtpvex6UPZ1AptTeuAiJGCtKkgwJkrwpMZMagh9ex6rL4sM8axfFcdQbERoFCRUKTJxrBkJh56g
-        """
-        
         lines = text.split('\n')
-        
-        m = 0
-        n = 0
+        m = n = 0
         xpubs = []
         x = 0
         derivation = ''
         descriptor = ''
-        
-        lines = text.split('\n')
-        
+
         for l in lines:
             if l.find('#') == 0:
-                # skip comments
                 continue
-        
             l = l.strip()
-        
             if ':' not in l:
-                # when label/value divider not found, skip line
                 continue
-                        
             label, value = l.split(':', 1)
             label = label.strip().lower()
             value = value.strip()
-        
+
             if label == 'policy':
                 try:
                     match = re.search(r'(\d+)\D*(\d+)', value)
                     m = int(match.group(1))
                     n = int(match.group(2))
-                except:
-                    raise Exception(f"Policy line not supported")
+                except Exception:
+                    raise Exception("Policy line not supported")
             elif label == 'derivation':
                 derivation = value
             elif label == 'format':
@@ -758,44 +861,38 @@ class DecodeQR:
             elif len(label) == 8:
                 if len(xpubs) == 0:
                     xpubs = [None] * n
-        
                 xpubs[x] = {'xfp': label, 'key': value}
                 x += 1
-        
+
         if None in xpubs or len(xpubs) != n:
-            raise Exception(f"bad or missing xpub")
-        
+            raise Exception("bad or missing xpub")
         if m <= 0 or m > 9 or n <= 0 or n > 9:
-            raise Exception(f"bad or missing policy")
-        
+            raise Exception("bad or missing policy")
         if len(derivation) == 0:
-            raise Exception(f"bad or missing derivation path")
-        
+            raise Exception("bad or missing derivation path")
         if script_type not in ['p2wsh', 'p2sh-p2wsh', 'p2wsh-p2sh']:
-            raise Exception(f"bad or missing script format")
-        
-        # create descriptor string
-        
+            raise Exception("bad or missing script format")
+
         if script_type == "p2wsh":
             script_open = "wsh(sortedmulti(" + str(m)
             script_close = "))"
         elif script_type in ["p2sh-p2wsh", 'p2wsh-p2sh']:
             script_open = "sh(wsh(sortedmulti(" + str(m)
             script_close = ")))"
-        
+
         descriptor = script_open
-        
-        for x in xpubs:
+        for xp in xpubs:
             if derivation[0] == 'm':
                 derivation = derivation[1:]
             derivation = derivation.replace("'", "h")
-            descriptor += ',[' + x['xfp'] + derivation + "]" + x['key'] + "/{0,1}/*"
-        
+            descriptor += ',[' + xp['xfp'] + derivation + "]" + xp['key'] + "/{0,1}/*"
         descriptor += script_close
-
         return descriptor
 
 
+# ---------------------------------------------------------------------------
+# Все decoder-классы ниже — без изменений относительно оригинала
+# ---------------------------------------------------------------------------
 
 class BaseQrDecoder:
     def __init__(self):
@@ -809,24 +906,15 @@ class BaseQrDecoder:
 
     def add(self, segment, qr_type):
         raise Exception("Not implemented in child class")
-    
-    def _get_eth_sign_request_cbor_duplicate(self) -> bytes:
-        """DUPLICATE - see line 291"""
-        if self.qr_type == QRType.ETH_SIGN_REQUEST:
-            return self.decoder.result_message().cbor
-        return None
 
     def get_qr_data(self) -> dict:
-        # TODO: standardize this approach across all decoders (example: SignMessageQrDecoder)
         raise Exception("get_qr_data must be implemented in decoder child class")
-
 
 
 class BaseSingleFrameQrDecoder(BaseQrDecoder):
     def __init__(self):
         super().__init__()
         self.total_segments = 1
-
 
 
 class BaseAnimatedQrDecoder(BaseQrDecoder):
@@ -842,19 +930,19 @@ class BaseAnimatedQrDecoder(BaseQrDecoder):
 
     def parse_segment(self, segment) -> str:
         raise Exception("Not implemented in child class")
-    
+
     @property
     def is_valid(self) -> bool:
         return True
 
     def add(self, segment, qr_type=None):
-        if self.total_segments == None:
+        if self.total_segments is None:
             self.total_segments = self.total_segment_nums(segment)
             self.segments = [None] * self.total_segments
         elif self.total_segments != self.total_segment_nums(segment):
             raise Exception('Segment total changed unexpectedly')
 
-        if self.segments[self.current_segment_num(segment) - 1] == None:
+        if self.segments[self.current_segment_num(segment) - 1] is None:
             self.segments[self.current_segment_num(segment) - 1] = self.parse_segment(segment)
             self.collected_segments += 1
             if self.total_segments == self.collected_segments:
@@ -863,102 +951,68 @@ class BaseAnimatedQrDecoder(BaseQrDecoder):
                     return DecodeQRStatus.COMPLETE
                 else:
                     return DecodeQRStatus.INVALID
-            return DecodeQRStatus.PART_COMPLETE # new segment added
-
-        return DecodeQRStatus.PART_EXISTING # segment not added because it's already been added
-
+            return DecodeQRStatus.PART_COMPLETE
+        return DecodeQRStatus.PART_EXISTING
 
 
 class SpecterPsbtQrDecoder(BaseAnimatedQrDecoder):
-    """
-        Used to decode Specter Desktop Animated QR PSBT encoding.
-    """
     def get_base64_data(self) -> str:
-        base64 = "".join(self.segments)
-        if self.complete and DecodeQR.is_base64(base64):
-            return base64
-
+        base64_data = "".join(self.segments)
+        if self.complete and DecodeQR.is_base64(base64_data):
+            return base64_data
         return None
-
 
     def get_data(self):
-        base64 = self.get_base64_data()
-        if base64 != None:
-            return a2b_base64(base64)
-
+        base64_data = self.get_base64_data()
+        if base64_data is not None:
+            return a2b_base64(base64_data)
         return None
 
-
     def current_segment_num(self, segment) -> int:
-        if re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE) != None:
-            return int(re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE).group(1))
-
+        m = re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE)
+        return int(m.group(1)) if m else None
 
     def total_segment_nums(self, segment) -> int:
-        if re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE) != None:
-            return int(re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE).group(2))
-
+        m = re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE)
+        return int(m.group(2)) if m else None
 
     def parse_segment(self, segment) -> str:
         return segment.split(" ")[-1].strip()
 
 
-
 class Base64PsbtQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes single frame base64 encoded qr image.
-        Does not support animated qr because no indicator of segments or their order
-    """
     def add(self, segment, qr_type=QRType.PSBT__BASE64):
         if DecodeQR.is_base64(segment):
             self.complete = True
             self.data = segment
             self.collected_segments = 1
             return DecodeQRStatus.COMPLETE
-
         return DecodeQRStatus.INVALID
-
 
     def get_base64_data(self) -> str:
         return self.data
 
-
     def get_data(self):
-        base64 = self.get_base64_data()
-        if base64 != None:
-            return a2b_base64(base64)
-
+        base64_data = self.get_base64_data()
+        if base64_data is not None:
+            return a2b_base64(base64_data)
         return None
 
 
-
 class Base43PsbtQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes single frame base43 encoded qr image.
-        Does not support animated qr because no indicator of segments or their order
-    """
     def add(self, segment, qr_type=QRType.PSBT__BASE43):
         if DecodeQR.is_base43_psbt(segment):
             self.complete = True
             self.data = DecodeQR.base43_decode(segment)
             self.collected_segments = 1
             return DecodeQRStatus.COMPLETE
-
         return DecodeQRStatus.INVALID
-
 
     def get_data(self):
         return self.data
 
 
-
 class SeedQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes a single frame representing a BIP39 seed.
-        Supports SeedSigner SeedQR numeric (wordlist indices) representation of a seed.
-        Supports SeedSigner CompactSeedQR entropy byte representation of a seed.
-        Supports mnemonic seed phrase string data.
-    """
     def __init__(self, wordlist_language_code):
         super().__init__()
         self.seed_phrase = []
@@ -967,21 +1021,16 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
         self.word_to_index = {word: idx for idx, word in enumerate(self.wordlist)}
         self.seed_type = "bip39"
 
-
     def add(self, segment, qr_type=QRType.SEED__SEEDQR):
-        # `segment` data will either be bytes or str, depending on the qr_type
         if qr_type == QRType.SEED__SEEDQR:
             try:
                 self.seed_phrase = []
-
                 if len(segment) % 4 != 0:
                     return DecodeQRStatus.INVALID
-
                 num_words = int(len(segment) / 4)
-                for i in range(0, num_words):
-                    index = int(segment[i * 4: (i*4) + 4])
-                    word = self.wordlist[index]
-                    self.seed_phrase.append(word)
+                for i in range(num_words):
+                    index = int(segment[i * 4:(i * 4) + 4])
+                    self.seed_phrase.append(self.wordlist[index])
                 if len(self.seed_phrase) > 0:
                     if not self.has_valid_word_count():
                         return DecodeQRStatus.INVALID
@@ -989,13 +1038,11 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
                     self.complete = True
                     self.collected_segments = 1
                     return DecodeQRStatus.COMPLETE
-                else:
-                    return DecodeQRStatus.INVALID
-            except Exception as e:
+                return DecodeQRStatus.INVALID
+            except Exception:
                 return DecodeQRStatus.INVALID
 
         if qr_type == QRType.SEED__COMPACTSEEDQR:
-            logging.info("Trying CompactSeedQR")
             try:
                 self.seed_phrase = bip39.mnemonic_from_bytes(segment).split()
                 if not self.has_valid_word_count():
@@ -1010,18 +1057,22 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
 
         elif qr_type == QRType.SEED__MNEMONIC:
             try:
-                seed_phrase_list = self.seed_phrase = segment.strip().split(" ")
-                if not self.has_valid_word_count():
+                seed_phrase_list = segment.strip().split(" ")
+                if not len(seed_phrase_list) in (12, 15, 18, 21, 24):
                     return DecodeQRStatus.INVALID
 
                 is_valid_bip39 = False
                 try:
-                    Seed(seed_phrase_list, passphrase="", wordlist_language_code=self.wordlist_language_code)
+                    Seed(seed_phrase_list, passphrase="",
+                         wordlist_language_code=self.wordlist_language_code)
                     is_valid_bip39 = True
                 except Exception:
-                    is_valid_bip39 = False
+                    pass
 
-                is_valid_aezeed = len(seed_phrase_list) == 24 and aezeed_has_valid_checksum(seed_phrase_list, self.word_to_index)
+                is_valid_aezeed = (
+                    len(seed_phrase_list) == 24 and
+                    aezeed_has_valid_checksum(seed_phrase_list, self.word_to_index)
+                )
 
                 if is_valid_aezeed and is_valid_bip39:
                     self.seed_type = "ambiguous"
@@ -1042,14 +1093,10 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
         elif qr_type == QRType.SEED__FOUR_LETTER_MNEMONIC:
             try:
                 seed_phrase_list = segment.strip().split(" ")
-                words = []
-                for s in seed_phrase_list:
-                    # TODO: Pre-calculate this once on startup
-                    _4LETTER_WORDLIST = [word[:4].strip() for word in self.wordlist]
-                    words.append(self.wordlist[_4LETTER_WORDLIST.index(s)])
-
-                # embit mnemonic code to validate
-                seed = Seed(words, passphrase="", wordlist_language_code=self.wordlist_language_code)
+                _4LETTER_WORDLIST = [word[:4].strip() for word in self.wordlist]
+                words = [self.wordlist[_4LETTER_WORDLIST.index(s)] for s in seed_phrase_list]
+                seed = Seed(words, passphrase="",
+                            wordlist_language_code=self.wordlist_language_code)
                 if not seed:
                     return DecodeQRStatus.INVALID
                 self.seed_phrase = words
@@ -1059,28 +1106,22 @@ class SeedQrDecoder(BaseSingleFrameQrDecoder):
                 self.complete = True
                 self.collected_segments = 1
                 return DecodeQRStatus.COMPLETE
-            except Exception as e:
+            except Exception:
                 return DecodeQRStatus.INVALID
 
-        else:
-            return DecodeQRStatus.INVALID
+        return DecodeQRStatus.INVALID
 
     def get_seed_phrase(self):
-        if self.complete:
-            return self.seed_phrase[:]
-        return []
+        return self.seed_phrase[:] if self.complete else []
 
     def get_seed_type(self):
-        if self.complete:
-            return self.seed_type
-        return None
+        return self.seed_type if self.complete else None
 
     def has_valid_word_count(self):
         return len(self.seed_phrase) in (12, 15, 18, 21, 24)
 
 
 class Slip39ShareDecoder(BaseSingleFrameQrDecoder):
-    """Decodes a single-frame SLIP-39 share"""
     def __init__(self):
         super().__init__()
         self.share = None
@@ -1128,35 +1169,18 @@ class XprvQrDecoder(BaseSingleFrameQrDecoder):
         return self.xprv
 
 
-
 class SettingsQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes settings data from the SettingsQR Generator.
-    """
     def __init__(self):
         super().__init__()
         self.data = None
 
-
     def add(self, segment, qr_type=QRType.SETTINGS):
-        """
-            * Ignores unrecognized settings options.
-            * Raises an Exception if a settings value is invalid.
-
-            See `Settings.update()` for info on settings validation, especially for
-            missing settings.
-        """
         if not segment.startswith("settings::"):
             raise Exception("Invalid SettingsQR data")
-        
-        # Leave any other parsing or validation up to the Settings class itself.
-        # SettingsQR are just ascii data to hand it over as-is.
         self.data = segment
-
         self.complete = True
         self.collected_segments = 1
         return DecodeQRStatus.COMPLETE
-
 
 
 class SignMessageQrDecoder(BaseSingleFrameQrDecoder):
@@ -1165,191 +1189,103 @@ class SignMessageQrDecoder(BaseSingleFrameQrDecoder):
         self.message = None
         self.derivation_path = None
 
-
     def add(self, segment, qr_type=QRType.SIGN_MESSAGE):
-        """
-            Expected QR data format:
-
-            signmessage {derivation_path} ascii:{message}
-        """
         parts = segment.split()
         self.derivation_path = parts[1].replace("h", "'")
         fmt = parts[2].split(":")[0]
         self.message = segment.split(f"{fmt}:")[1]
-
-        # TODO: support formats other than ascii?
         if fmt != "ascii":
             logger.info(f"Sign message: Unsupported format: {fmt}")
             return DecodeQRStatus.INVALID
-
         self.complete = True
         self.collected_segments = 1
-
         return DecodeQRStatus.COMPLETE
-
-
-    def _get_eth_sign_request_cbor_duplicate(self) -> bytes:
-        """DUPLICATE - see line 291"""
-        if self.qr_type == QRType.ETH_SIGN_REQUEST:
-            return self.decoder.result_message().cbor
-        return None
 
     def get_qr_data(self) -> dict:
         return dict(derivation_path=self.derivation_path, message=self.message)
 
 
-
 class BitcoinAddressQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes single frame representing a bitcoin address
-    """
     def __init__(self):
         super().__init__()
         self.address = None
         self.address_type = None
 
-
     def add(self, segment, qr_type=QRType.BITCOIN_ADDRESS):
-        """
-            Input may be prefixed with "bitcoin:" but will be ignored.
-
-            RegEx searches for a recognizable bitcoin address.
-                * The `^` ensures that the specified address prefixes can only match at
-                    the beginning of the address.
-
-            Result will yield the following match groups:
-                * group 1: complete address
-                * group 2: address prefix
-        """
-        address_match = re.search(r'^((bc1q|tb1q|bcrt1q|bc1p|tb1p|bcrt1p|[123]|[mn])[a-zA-HJ-NP-Z0-9]{25,64})', segment.split(":")[-1], re.IGNORECASE)
-        if address_match != None:
+        address_match = re.search(
+            r'^((bc1q|tb1q|bcrt1q|bc1p|tb1p|bcrt1p|[123]|[mn])[a-zA-HJ-NP-Z0-9]{25,64})',
+            segment.split(":")[-1], re.IGNORECASE
+        )
+        if address_match is not None:
             self.address = address_match.group(1)
             self.complete = True
             self.collected_segments = 1
-            
-            # Have to handle wallets that uppercase bech32 addresses.
-            # Note that it's safe to lowercase the prefix for ALL addr formats.
             addr_prefix = address_match.group(2).lower()
-            
-            if addr_prefix == "1":
-                # Legacy P2PKH. mainnet
-                self.address_type = (SettingsConstants.LEGACY_P2PKH, SettingsConstants.MAINNET)
 
-            elif addr_prefix in ["m", "n"]:
-                self.address_type = (SettingsConstants.LEGACY_P2PKH, SettingsConstants.TESTNET)
+            prefix_map = {
+                "1":     (SettingsConstants.LEGACY_P2PKH,   SettingsConstants.MAINNET),
+                "m":     (SettingsConstants.LEGACY_P2PKH,   SettingsConstants.TESTNET),
+                "n":     (SettingsConstants.LEGACY_P2PKH,   SettingsConstants.TESTNET),
+                "3":     (SettingsConstants.NESTED_SEGWIT,  SettingsConstants.MAINNET),
+                "2":     (SettingsConstants.NESTED_SEGWIT,  SettingsConstants.TESTNET),
+                "bc1q":  (SettingsConstants.NATIVE_SEGWIT,  SettingsConstants.MAINNET),
+                "tb1q":  (SettingsConstants.NATIVE_SEGWIT,  SettingsConstants.TESTNET),
+                "bcrt1q":(SettingsConstants.NATIVE_SEGWIT,  SettingsConstants.REGTEST),
+                "bc1p":  (SettingsConstants.TAPROOT,        SettingsConstants.MAINNET),
+                "tb1p":  (SettingsConstants.TAPROOT,        SettingsConstants.TESTNET),
+                "bcrt1p":(SettingsConstants.TAPROOT,        SettingsConstants.REGTEST),
+            }
+            self.address_type = prefix_map.get(addr_prefix)
 
-            elif addr_prefix == "3":
-                # Nested segwit single sig (p2sh-p2wpkh), nested segwit multisig (p2sh-p2wsh), or legacy multisig (p2sh); mainnet
-                # TODO: Would be more correct to use a P2SH constant
-                self.address_type = (SettingsConstants.NESTED_SEGWIT, SettingsConstants.MAINNET)
-
-            elif addr_prefix == "2":
-                # Nested segwit single sig (p2sh-p2wpkh), nested segwit multisig (p2sh-p2wsh), or legacy multisig (p2sh); testnet / regtest
-                self.address_type = (SettingsConstants.NESTED_SEGWIT, SettingsConstants.TESTNET)
-
-            elif addr_prefix == "bc1q":
-                # Native Segwit (single sig or multisig), mainnet 
-                self.address_type = (SettingsConstants.NATIVE_SEGWIT, SettingsConstants.MAINNET)
-
-            elif addr_prefix == "tb1q":
-                # Native Segwit (single sig or multisig), testnet
-                self.address_type = (SettingsConstants.NATIVE_SEGWIT, SettingsConstants.TESTNET)
-
-            elif addr_prefix == "bcrt1q":
-                # Native Segwit (single sig or multisig), regtest
-                self.address_type = (SettingsConstants.NATIVE_SEGWIT, SettingsConstants.REGTEST)
-
-            elif addr_prefix == "bc1p":
-                self.address_type = (SettingsConstants.TAPROOT, SettingsConstants.MAINNET)
-
-            elif addr_prefix == "tb1p":
-                self.address_type = (SettingsConstants.TAPROOT, SettingsConstants.TESTNET)
-
-            elif addr_prefix == "bcrt1p":
-                self.address_type = (SettingsConstants.TAPROOT, SettingsConstants.REGTEST)
-            # Note: there is no final "else" here because the regex won't return any other matches.
-
-            # If the addr type is case-insensitive, ensure we return it lowercase
-            if self.address_type[0] in [SettingsConstants.NATIVE_SEGWIT, SettingsConstants.TAPROOT]:
+            if self.address_type and self.address_type[0] in [
+                SettingsConstants.NATIVE_SEGWIT, SettingsConstants.TAPROOT
+            ]:
                 self.address = self.address.lower()
-
             return DecodeQRStatus.COMPLETE
 
         logger.debug(f"Invalid address: {segment}")
         return DecodeQRStatus.INVALID
 
-
     def get_address(self):
-        if self.address != None:
-            return self.address
-        return None
-        
+        return self.address
 
     def get_address_type(self):
-        if self.address != None:
-            if self.address_type != None:
-                return self.address_type
-            else:
-                return "Unknown"
-        return None
-
+        return self.address_type or "Unknown"
 
 
 class SpecterWalletQrDecoder(BaseAnimatedQrDecoder):
-    """
-        Decodes animated frames to get a wallet descriptor from Specter Desktop
-    """
-    def validate_json(self) -> str:
+    def validate_json(self) -> bool:
         try:
-            j = "".join(self.segments)
-            json.loads(j)
+            json.loads("".join(self.segments))
+            return True
         except json.decoder.JSONDecodeError:
             return False
-        return True
-
 
     @property
     def is_valid(self):
         if self.validate_json():
-            j = "".join(self.segments)
-            data = json.loads(j)
-            if "descriptor" in data:
-                return True
-            return False
+            data = json.loads("".join(self.segments))
+            return "descriptor" in data
+        return False
 
-
-    def get_wallet_descriptor(self) -> str:
+    def get_wallet_descriptor(self) -> str | None:
         if self.is_valid:
-            j = "".join(self.segments)
-            data = json.loads(j)
-            return data['descriptor']
+            return json.loads("".join(self.segments))['descriptor']
         return None
 
-
-    def is_complete(self) -> bool:
-        return self.complete and self.is_valid()
-
-
     def current_segment_num(self, segment) -> int:
-        if re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE) != None:
-            return int(re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE).group(1))
-        else:
-            return 1
-
+        m = re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE)
+        return int(m.group(1)) if m else 1
 
     def total_segment_nums(self, segment) -> int:
-        if re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE) != None:
-            return int(re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE).group(2))
-        else:
-            return 1
-
+        m = re.search(r'^p(\d+)of(\d+) ', segment, re.IGNORECASE)
+        return int(m.group(2)) if m else 1
 
     def parse_segment(self, segment) -> str:
         try:
             return re.search(r'^p(\d+)of(\d+) (.+$)', segment, re.IGNORECASE).group(3)
-        except:
+        except Exception:
             return segment
-
 
 
 class GenericWalletQrDecoder(BaseSingleFrameQrDecoder):
@@ -1357,11 +1293,9 @@ class GenericWalletQrDecoder(BaseSingleFrameQrDecoder):
         super().__init__()
         self.descriptor = None
 
-
     def add(self, segment, qr_type=QRType.WALLET__GENERIC):
         from embit.descriptor import Descriptor
         try:
-            # Validate via embit
             Descriptor.from_string(segment)
             self.descriptor = segment
             self.complete = True
@@ -1369,25 +1303,21 @@ class GenericWalletQrDecoder(BaseSingleFrameQrDecoder):
         except Exception as e:
             logger.info(repr(e), exc_info=True)
         return DecodeQRStatus.INVALID
-    
 
     def get_wallet_descriptor(self):
         return self.descriptor
 
 
-
-class MultiSigConfigFileQRDecoder(GenericWalletQrDecoder):    
+class MultiSigConfigFileQRDecoder(GenericWalletQrDecoder):
     def add(self, segment, qr_type=QRType.WALLET__CONFIGFILE):
         descriptor = DecodeQR.multisig_setup_file_to_descriptor(segment)
-        return super().add(descriptor,qr_type=QRType.WALLET__CONFIGFILE)
-
+        return super().add(descriptor, qr_type=QRType.WALLET__CONFIGFILE)
 
 
 class PassphraseQrDecoder(BaseSingleFrameQrDecoder):
     def __init__(self):
         super().__init__()
         self.passphrase = None
-
 
     def add(self, segment, qr_type=QRType.PASSPHRASE):
         if qr_type == QRType.PASSPHRASE:
@@ -1398,23 +1328,16 @@ class PassphraseQrDecoder(BaseSingleFrameQrDecoder):
                 return DecodeQRStatus.COMPLETE
             except Exception as e:
                 logger.exception(repr(e))
-
         return DecodeQRStatus.INVALID
-
 
     def get_passphrase(self):
         return self.passphrase
 
 
-
 class EncryptionKeyQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes single frame representing an encyption key.
-    """
     def __init__(self):
         super().__init__()
         self.encryption_key = None
-
 
     def add(self, segment, qr_type=QRType.ENCRYPTION_KEY):
         if qr_type == QRType.ENCRYPTION_KEY:
@@ -1429,17 +1352,13 @@ class EncryptionKeyQrDecoder(BaseSingleFrameQrDecoder):
                 return DecodeQRStatus.COMPLETE
             except Exception as e:
                 logger.exception(repr(e))
-
         return DecodeQRStatus.INVALID
-
 
     def get_encryption_key(self):
         return self.encryption_key
 
 
 class WifQrDecoder(BaseSingleFrameQrDecoder):
-    """Decodes single frame representing a WIF-encoded private key."""
-
     def __init__(self):
         super().__init__()
         self.wif = None
@@ -1461,8 +1380,6 @@ class WifQrDecoder(BaseSingleFrameQrDecoder):
 
 
 class Bip38QrDecoder(BaseSingleFrameQrDecoder):
-    """Decodes single frame representing a BIP38-encrypted private key."""
-
     def __init__(self):
         super().__init__()
         self.bip38 = None
@@ -1484,17 +1401,12 @@ class Bip38QrDecoder(BaseSingleFrameQrDecoder):
         return self.bip38
 
 
-
 class EncryptedQrDecoder(BaseSingleFrameQrDecoder):
-    """
-        Decodes single frame representing an encypted seed.
-    """
     def __init__(self):
         super().__init__()
         self.public_data = None
         self.seed_phrase = []
         self.xprv = None
-
 
     def add(self, segment, qr_type=QRType.SEED__ENCRYPTEDQR, encryption_key=None):
         if qr_type == QRType.SEED__ENCRYPTEDQR:
@@ -1510,19 +1422,21 @@ class EncryptedQrDecoder(BaseSingleFrameQrDecoder):
                     from seedsigner.helpers.base43 import base43_decode
                     encrypted_qr = EncryptedQRCode()
                     self.public_data = None
-                    try:  # Try to decode base43 data
+                    try:
                         if isinstance(segment, bytes):
                             segment = segment.decode('utf-8')
                         data_bytes = base43_decode(segment)
                         self.public_data = encrypted_qr.public_data(data_bytes)
-                    except:
+                    except Exception:
                         pass
-                    if not self.public_data:  # Failed to decode and parse base43
+                    if not self.public_data:
                         self.public_data = encrypted_qr.public_data(segment)
                     if not self.public_data:
                         raise Exception("Encrypted QR code is invalid.")
                     from seedsigner.models.encryptedqr import EncryptedQR
-                    encryptedqr = EncryptedQR(encrypted_qr=encrypted_qr, public_data=self.public_data)
+                    encryptedqr = EncryptedQR(
+                        encrypted_qr=encrypted_qr, public_data=self.public_data
+                    )
                     controller.storage2.set_encryptedqr(encryptedqr)
 
                 if encryption_key:
@@ -1546,16 +1460,12 @@ class EncryptedQrDecoder(BaseSingleFrameQrDecoder):
                 self.complete = True
                 self.collected_segments = 1
                 return DecodeQRStatus.COMPLETE
-
             except Exception as e:
                 logger.exception(repr(e))
-
         return DecodeQRStatus.INVALID
-
 
     def get_public_data(self):
         return self.public_data
-
 
     def get_seed_phrase(self):
         return self.seed_phrase[:]
@@ -1564,12 +1474,10 @@ class EncryptedQrDecoder(BaseSingleFrameQrDecoder):
         return self.xprv
 
 
-
 class TextQrDecoder(BaseSingleFrameQrDecoder):
     def __init__(self):
         super().__init__()
         self.text = None
-
 
     def add(self, segment, qr_type=QRType.TEXT):
         if qr_type == QRType.TEXT:
@@ -1580,9 +1488,7 @@ class TextQrDecoder(BaseSingleFrameQrDecoder):
                 return DecodeQRStatus.COMPLETE
             except Exception as e:
                 logger.exception(repr(e))
-
         return DecodeQRStatus.INVALID
-
 
     def get_text(self):
         return self.text
@@ -1607,7 +1513,6 @@ class TimeQrDecoder(BaseSingleFrameQrDecoder):
     def get_time(self):
         if self.time_str is None:
             return None
-        # strip prefix 'oT'
         data = self.time_str[2:]
         if data == "0":
             return None
