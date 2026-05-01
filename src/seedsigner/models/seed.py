@@ -63,14 +63,14 @@ class Seed:
     @property
     def mnemonic_str(self) -> str:
         return " ".join(self._mnemonic)
-    
+
 
     @property
     def mnemonic_list(self) -> List[str]:
         return self._mnemonic
 
 
-    @property 
+    @property
     def wordlist_language_code(self) -> str:
         return self._wordlist_language_code
 
@@ -78,7 +78,7 @@ class Seed:
     @property
     def mnemonic_display_str(self) -> str:
         return unicodedata.normalize("NFC", " ".join(self._mnemonic))
-    
+
 
     @property
     def mnemonic_display_list(self) -> List[str]:
@@ -93,7 +93,7 @@ class Seed:
     @property
     def passphrase(self):
         return self._passphrase
-        
+
 
     @property
     def passphrase_display(self):
@@ -187,7 +187,7 @@ class Seed:
     def ensure_seed_words_available(self):
         """Raise if this seed type does not expose mnemonic words."""
         return
-        
+
 
     def wipe(self):
         """Best-effort secure clearing of all sensitive fields."""
@@ -451,7 +451,7 @@ class Slip39Seed(Seed):
             raise InvalidSeedException(
                 "The requested threshold must not exceed the number of shares."
             )
-        
+
         if threshold == 1 and num_shares > 1:
             raise InvalidSeedException(
                 "Multi-Share with threshold of 1 is not allowed, create 1-1 instead."
