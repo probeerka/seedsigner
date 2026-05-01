@@ -112,7 +112,7 @@ class DecodeQR:
 
             elif self.qr_type == QRType.WALLET__GENERIC:
                 self.decoder = GenericWalletQrDecoder()
-                
+
             elif self.qr_type == QRType.WALLET__CONFIGFILE:
                 self.decoder = MultiSigConfigFileQRDecoder()
 
@@ -139,7 +139,7 @@ class DecodeQR:
 
         elif self.qr_type != qr_type:
             raise Exception('QR Fragment Unexpected Type Change')
-        
+
         if not self.decoder:
             # Did not find any recognizable format
             return DecodeQRStatus.INVALID
@@ -380,17 +380,17 @@ class DecodeQR:
     @property
     def is_xprv(self) -> bool:
         return self.qr_type == QRType.SEED__XPRV
-    
+
 
     @property
     def is_json(self):
         return self.qr_type in [QRType.SETTINGS, QRType.JSON]
-        
+
 
     @property
     def is_address(self):
         return self.qr_type == QRType.BITCOIN_ADDRESS
-        
+
 
     @property
     def is_sign_message(self):
@@ -407,18 +407,18 @@ class DecodeQR:
     @property
     def is_bip38(self):
         return self.qr_type == QRType.BIP38
-        
+
 
     @property
     def is_wallet_descriptor(self):
         check = self.qr_type in [QRType.WALLET__SPECTER, QRType.WALLET__UR, QRType.WALLET__CONFIGFILE, QRType.WALLET__GENERIC, QRType.OUTPUT__UR]
-        
+
         if self.qr_type in [QRType.BYTES__UR]:
             cbor = self.decoder.result_message().cbor
             raw = Bytes.from_cbor(cbor).data
             data = raw.decode("utf-8").lower()
             check = 'policy:' in data and "format:" in data and "derivation:" in data
-        
+
         return check
 
     @property
@@ -625,7 +625,7 @@ class DecodeQR:
         return QRType.INVALID
 
 
-    @staticmethod   
+    @staticmethod
     def is_base64(s):
         try:
             return base64.b64encode(base64.b64decode(s)) == s.encode('ascii')
@@ -633,7 +633,7 @@ class DecodeQR:
             return False
 
 
-    @staticmethod   
+    @staticmethod
     def is_base64_psbt(s):
         try:
             if DecodeQR.is_base64(s):
@@ -663,7 +663,7 @@ class DecodeQR:
             v = s.encode('ascii')
         elif isinstance(s, bytearray):
             v = bytes(s)
-            
+
         long_value = 0
         power_of_base = 1
         for c in v[::-1]:
@@ -708,7 +708,7 @@ class DecodeQR:
         Policy: 4 of 6
         Derivation: m/48'/0'/0'/2'
         Format: P2WSH
-        
+
         E0811B6B: xpub6E8v7uy63pCeJvHe5W8ea8zTnCtKMFgMRb5bueWWcUFMw6sWmUwTqxM8cFiKQRWkA2Fxth9HJZufJwjWTTvU1UGZNpTrh9khrswYMgeHiCt
         852B308F: xpub6ErhgAWfnEqW7xDBm1iLq5JjNyUS65YUFnjHLrRv9zmdDEtuE75bpWQ8o6bSBnpT6AkrrsA8eA5SmEFArZn11KEPaZJzx9mHTXPWZCsxLyh
         7EDF9C59: xpub6DaFfKoe7WpofrbYeNo3Wv2AiLUMeyrPwotXfukFxUHbK4JxaLHTd5394QtH5wnjFzBgr2YnJpHhXv25Zsqv2APmMFvH1DsKHj5LCr3pmXs
@@ -716,33 +716,33 @@ class DecodeQR:
         184D07EB: xpub6EEoTpcQu7N4R8D84pJjZ69j3minevnYLDDoo2HBzYBXTQ4rGVf4XGTyCYFwJuZdsF9MyFYJNzYEjg5LGMA1ubTGWuDnjHAZz6ficVRDTSy
         3E451EFE: xpub6ExQPvQxGBMaPxr8Fv7Vq91ztJFFX3VWvtpvex6UPZ1AptTeuAiJGCtKkgwJkrwpMZMagh9ex6rL4sM8axfFcdQbERoFCRUKTJxrBkJh56g
         """
-        
+
         lines = text.split('\n')
-        
+
         m = 0
         n = 0
         xpubs = []
         x = 0
         derivation = ''
         descriptor = ''
-        
+
         lines = text.split('\n')
-        
+
         for l in lines:
             if l.find('#') == 0:
                 # skip comments
                 continue
-        
+
             l = l.strip()
-        
+
             if ':' not in l:
                 # when label/value divider not found, skip line
                 continue
-                        
+
             label, value = l.split(':', 1)
             label = label.strip().lower()
             value = value.strip()
-        
+
             if label == 'policy':
                 try:
                     match = re.search(r'(\d+)\D*(\d+)', value)
@@ -758,39 +758,39 @@ class DecodeQR:
             elif len(label) == 8:
                 if len(xpubs) == 0:
                     xpubs = [None] * n
-        
+
                 xpubs[x] = {'xfp': label, 'key': value}
                 x += 1
-        
+
         if None in xpubs or len(xpubs) != n:
             raise Exception(f"bad or missing xpub")
-        
+
         if m <= 0 or m > 9 or n <= 0 or n > 9:
             raise Exception(f"bad or missing policy")
-        
+
         if len(derivation) == 0:
             raise Exception(f"bad or missing derivation path")
-        
+
         if script_type not in ['p2wsh', 'p2sh-p2wsh', 'p2wsh-p2sh']:
             raise Exception(f"bad or missing script format")
-        
+
         # create descriptor string
-        
+
         if script_type == "p2wsh":
             script_open = "wsh(sortedmulti(" + str(m)
             script_close = "))"
         elif script_type in ["p2sh-p2wsh", 'p2wsh-p2sh']:
             script_open = "sh(wsh(sortedmulti(" + str(m)
             script_close = ")))"
-        
+
         descriptor = script_open
-        
+
         for x in xpubs:
             if derivation[0] == 'm':
                 derivation = derivation[1:]
             derivation = derivation.replace("'", "h")
             descriptor += ',[' + x['xfp'] + derivation + "]" + x['key'] + "/{0,1}/*"
-        
+
         descriptor += script_close
 
         return descriptor
@@ -809,12 +809,15 @@ class BaseQrDecoder:
 
     def add(self, segment, qr_type):
         raise Exception("Not implemented in child class")
+<<<<<<< HEAD
     
     def _get_eth_sign_request_cbor_duplicate(self) -> bytes:
         """DUPLICATE - see line 291"""
         if self.qr_type == QRType.ETH_SIGN_REQUEST:
             return self.decoder.result_message().cbor
         return None
+=======
+>>>>>>> 16f95bfe (fix-recovery-phrase-error)
 
     def get_qr_data(self) -> dict:
         # TODO: standardize this approach across all decoders (example: SignMessageQrDecoder)
@@ -842,7 +845,7 @@ class BaseAnimatedQrDecoder(BaseQrDecoder):
 
     def parse_segment(self, segment) -> str:
         raise Exception("Not implemented in child class")
-    
+
     @property
     def is_valid(self) -> bool:
         return True
@@ -1148,7 +1151,7 @@ class SettingsQrDecoder(BaseSingleFrameQrDecoder):
         """
         if not segment.startswith("settings::"):
             raise Exception("Invalid SettingsQR data")
-        
+
         # Leave any other parsing or validation up to the Settings class itself.
         # SettingsQR are just ascii data to hand it over as-is.
         self.data = segment
@@ -1226,11 +1229,11 @@ class BitcoinAddressQrDecoder(BaseSingleFrameQrDecoder):
             self.address = address_match.group(1)
             self.complete = True
             self.collected_segments = 1
-            
+
             # Have to handle wallets that uppercase bech32 addresses.
             # Note that it's safe to lowercase the prefix for ALL addr formats.
             addr_prefix = address_match.group(2).lower()
-            
+
             if addr_prefix == "1":
                 # Legacy P2PKH. mainnet
                 self.address_type = (SettingsConstants.LEGACY_P2PKH, SettingsConstants.MAINNET)
@@ -1248,7 +1251,7 @@ class BitcoinAddressQrDecoder(BaseSingleFrameQrDecoder):
                 self.address_type = (SettingsConstants.NESTED_SEGWIT, SettingsConstants.TESTNET)
 
             elif addr_prefix == "bc1q":
-                # Native Segwit (single sig or multisig), mainnet 
+                # Native Segwit (single sig or multisig), mainnet
                 self.address_type = (SettingsConstants.NATIVE_SEGWIT, SettingsConstants.MAINNET)
 
             elif addr_prefix == "tb1q":
@@ -1283,7 +1286,7 @@ class BitcoinAddressQrDecoder(BaseSingleFrameQrDecoder):
         if self.address != None:
             return self.address
         return None
-        
+
 
     def get_address_type(self):
         if self.address != None:
@@ -1369,14 +1372,14 @@ class GenericWalletQrDecoder(BaseSingleFrameQrDecoder):
         except Exception as e:
             logger.info(repr(e), exc_info=True)
         return DecodeQRStatus.INVALID
-    
+
 
     def get_wallet_descriptor(self):
         return self.descriptor
 
 
 
-class MultiSigConfigFileQRDecoder(GenericWalletQrDecoder):    
+class MultiSigConfigFileQRDecoder(GenericWalletQrDecoder):
     def add(self, segment, qr_type=QRType.WALLET__CONFIGFILE):
         descriptor = DecodeQR.multisig_setup_file_to_descriptor(segment)
         return super().add(descriptor,qr_type=QRType.WALLET__CONFIGFILE)
