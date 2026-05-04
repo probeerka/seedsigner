@@ -809,15 +809,12 @@ class BaseQrDecoder:
 
     def add(self, segment, qr_type):
         raise Exception("Not implemented in child class")
-<<<<<<< HEAD
-    
+
     def _get_eth_sign_request_cbor_duplicate(self) -> bytes:
         """DUPLICATE - see line 291"""
         if self.qr_type == QRType.ETH_SIGN_REQUEST:
             return self.decoder.result_message().cbor
         return None
-=======
->>>>>>> 16f95bfe (fix-recovery-phrase-error)
 
     def get_qr_data(self) -> dict:
         # TODO: standardize this approach across all decoders (example: SignMessageQrDecoder)
