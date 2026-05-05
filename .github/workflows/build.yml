@@ -40,7 +40,7 @@ on:
         default: probeerka/seedsigner
       source-ref:
         description: The seedsigner ref (tag/branch/sha1) to use
-        default: dev
+        default: feature/rabby_wallet_integration
         required: true
       target:
         description: Build target profile (e.g., pi0, pi2, pi02w, pi4)
@@ -49,7 +49,7 @@ on:
       smartcard:
         description: Enable smartcard support for the build
         required: false
-        default: 'false'
+        default: 'true'
         type: boolean
       dev:
         description: Build dev image
